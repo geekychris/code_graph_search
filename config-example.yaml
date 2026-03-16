@@ -1,0 +1,34 @@
+repos:
+  - id: my-service
+    name: My Service
+    path: /path/to/your/repo
+    languages: [java, go, rust, typescript]
+    excludePatterns:
+      - "**/target/**"
+      - "**/build/**"
+      - "**/.git/**"
+      - "**/node_modules/**"
+    classFiles:
+      enabled: false
+      # jarPaths: ["/path/to/lib.jar"]
+      # packageFilters: ["com.example.*"]
+    crossRepoLinks:
+      - repoId: another-service
+        linkType: grpc
+        description: "This service calls another-service via gRPC"
+
+indexer:
+  dataDir: ./data
+  watchDebounceMs: 500
+  autoWatch: true
+  indexingThreads: 4
+
+server:
+  port: 8080
+  mcpStdioEnabled: false
+  mcpHttpEnabled: true
+
+treeSitter:
+  binaryPath: tree-sitter
+  enabled: true
+  timeoutSeconds: 30
