@@ -16,139 +16,148 @@ A multi-language code analysis platform that builds a searchable graph represent
 
 ### High-Level Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Interfaces                               │
-│  ┌──────────┐   ┌──────────────┐   ┌─────────────────────────┐ │
-│  │ React UI │   │  REST API    │   │  MCP Server             │ │
-│  │ (Cyto-   │   │  (Javalin)   │   │  (stdio / HTTP / SSE)   │ │
-│  │  scape)  │◄──┤  :8080/api   │   │  JSON-RPC 2.0           │ │
-│  └──────────┘   └──────┬───────┘   └───────────┬─────────────┘ │
-│                        │                        │               │
-└────────────────────────┼────────────────────────┼───────────────┘
-                         │                        │
-                         ▼                        ▼
-              ┌──────────────────────────────────────┐
-              │          GraphService                 │
-              │    (IndexerService impl)              │
-              │   80+ operations: search, traverse,   │
-              │   type hierarchy, call graph, etc.    │
-              └──────┬──────────┬──────────┬─────────┘
-                     │          │          │
-           ┌─────────┘    ┌────┘    ┌─────┘
-           ▼              ▼         ▼
-   ┌──────────────┐ ┌──────────┐ ┌────────────┐
-   │  GraphStore  │ │  Lucene  │ │ Metadata   │
-   │  (RocksDB)   │ │  Indexer │ │   Store    │
-   │              │ │          │ │  (SQLite)  │
-   │  nodes       │ │ full-text│ │            │
-   │  edges_out   │ │  search  │ │  repo info │
-   │  edges_in    │ │  index   │ │  config    │
-   │  file_elems  │ │          │ │            │
-   │  repos       │ │          │ │            │
-   └──────────────┘ └──────────┘ └────────────┘
+```mermaid
+graph TD
+    subgraph Interfaces
+        UI["React UI<br/>(Cytoscape.js)"]
+        REST["REST API<br/>(Javalin :8080/api)"]
+        MCP["MCP Server<br/>(stdio / HTTP / SSE)<br/>JSON-RPC 2.0"]
+    end
+
+    UI -->|fetch| REST
+    REST --> GS
+    MCP --> GS
+
+    GS["<b>GraphService</b><br/>IndexerService impl<br/>80+ operations: search, traverse,<br/>type hierarchy, call graph, etc."]
+
+    GS --> RDB["<b>GraphStore</b><br/>(RocksDB)<br/>nodes, edges_out,<br/>edges_in, file_elems, repos"]
+    GS --> LUC["<b>LuceneIndexer</b><br/>full-text search index"]
+    GS --> SQL["<b>MetadataStore</b><br/>(SQLite)<br/>repo info, config"]
 ```
 
 ### Indexing Pipeline
 
-```
-  Source Files              Parsers                     Storage
- ┌───────────┐     ┌─────────────────────┐     ┌─────────────────┐
- │  .java    │────►│  JavaSourceParser   │     │                 │
- │  .go      │────►│  TreeSitterParser   │     │   GraphStore    │
- │  .rs      │────►│  TreeSitterParser   │────►│   (RocksDB)     │
- │  .ts/.tsx  │────►│  TreeSitterParser   │     │                 │
- │  .c/.cpp  │────►│  TreeSitterParser   │     │   LuceneIndexer │
- │  .md      │────►│  MarkdownParser     │────►│   (full-text)   │
- │  .yaml    │────►│  ConfigFileParser   │     │                 │
- │  .class   │────►│  ClassFileParser    │     │   MetadataStore │
- └───────────┘     └─────────┬───────────┘     │   (SQLite)      │
-                             │                 └─────────────────┘
-                             ▼
-                      ┌──────────────┐
-                      │ ParseResult  │
-                      │  elements[ ] │  CodeElement: class, method,
-                      │  edges[ ]    │    function, field, type...
-                      └──────────────┘  CodeEdge: contains, calls,
-                                          extends, imports...
+```mermaid
+graph LR
+    subgraph Sources
+        JAVA[".java"]
+        GO[".go"]
+        RS[".rs"]
+        TS[".ts / .tsx"]
+        C[".c / .cpp"]
+        MD[".md"]
+        YAML[".yaml / .json"]
+        CLASS[".class"]
+    end
+
+    subgraph Parsers
+        JSP["JavaSourceParser"]
+        TSP["TreeSitterParser"]
+        MDP["MarkdownParser"]
+        CFP["ConfigFileParser"]
+        CLP["ClassFileParser"]
+    end
+
+    JAVA --> JSP
+    GO --> TSP
+    RS --> TSP
+    TS --> TSP
+    C --> TSP
+    MD --> MDP
+    YAML --> CFP
+    CLASS --> CLP
+
+    JSP --> PR
+    TSP --> PR
+    MDP --> PR
+    CFP --> PR
+    CLP --> PR
+
+    PR["<b>ParseResult</b><br/>CodeElement[]: class, method,<br/>function, field, type...<br/>CodeEdge[]: contains, calls,<br/>extends, imports..."]
+
+    PR --> RDB["GraphStore<br/>(RocksDB)"]
+    PR --> LUC["LuceneIndexer<br/>(full-text)"]
+    PR --> SQL["MetadataStore<br/>(SQLite)"]
 ```
 
 ### Module Dependency Graph
 
-```
-                    ┌───────┐
-                    │  app  │  Entry point & lifecycle
-                    └───┬───┘
-          ┌─────────┬───┼───┬──────────┐
-          ▼         ▼   ▼   ▼          ▼
-     ┌────────┐ ┌─────┐ ┌───────┐ ┌────────┐
-     │ parser │ │ mcp │ │  rest │ │watcher │
-     └───┬────┘ └──┬──┘ └───┬───┘ └───┬────┘
-         │         │        │          │
-         │    ┌────┘        │          │
-         ▼    ▼             ▼          ▼
-       ┌──────────┐    ┌────────┐
-       │ indexer   │    │   ui   │  React frontend
-       └────┬─────┘    └────────┘  (built into REST
-            │                       static resources)
-            ▼
-       ┌────────┐
-       │  core  │  Models, interfaces, config
-       └────────┘
+```mermaid
+graph TD
+    APP["<b>app</b><br/>Entry point & lifecycle"]
+
+    APP --> PARSER["<b>parser</b>"]
+    APP --> MCP["<b>mcp</b>"]
+    APP --> REST["<b>rest</b>"]
+    APP --> WATCHER["<b>watcher</b>"]
+
+    PARSER --> INDEXER["<b>indexer</b>"]
+    MCP --> INDEXER
+    WATCHER --> INDEXER
+    REST --> UI["<b>ui</b><br/>React frontend<br/>(built into REST static resources)"]
+
+    INDEXER --> CORE["<b>core</b><br/>Models, interfaces, config"]
 ```
 
 ### Graph Data Model
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Edge Types                         │
-│                                                     │
-│  Structural:    CONTAINS, DEFINED_IN, PRECEDES      │
-│  Type system:   EXTENDS, IMPLEMENTS, OVERRIDES,     │
-│                 MIXES_IN, USES_TYPE                  │
-│  Call graph:    CALLS, INSTANTIATES                  │
-│  Dependencies:  IMPORTS, DEPENDS_ON                  │
-│  Documentation: DOCUMENTS, ANNOTATES                 │
-│  Cross-lang:    IMPLEMENTS_PROTO, CALLS_RPC,        │
-│                 SHARES_TYPE                          │
-│  Markdown:      SECTION_OF, DOCUMENTS_DIR           │
-│  Config:        CONFIGURES, REFERENCES_CLASS         │
-└─────────────────────────────────────────────────────┘
+```mermaid
+classDiagram
+    class CodeElement {
+        String id
+        String name
+        String qualifiedName
+        ElementType type
+        Language language
+        String filePath
+        int startLine
+        int endLine
+        String documentation
+        String[] modifiers
+        String repoId
+    }
 
-    CodeElement                          CodeEdge
-  ┌────────────────┐               ┌──────────────────┐
-  │ id             │               │ sourceId          │
-  │ name           │◄──────────────│ targetId          │
-  │ qualifiedName  │               │ type (EdgeType)   │
-  │ type (Element- │               │ properties{}      │
-  │   Type enum)   │               └──────────────────┘
-  │ language       │
-  │ filePath       │
-  │ startLine      │
-  │ endLine        │
-  │ documentation  │
-  │ modifiers[]    │
-  │ repoId         │
-  └────────────────┘
+    class CodeEdge {
+        String sourceId
+        String targetId
+        EdgeType type
+        Map properties
+    }
+
+    CodeEdge --> CodeElement : sourceId
+    CodeEdge --> CodeElement : targetId
 ```
+
+#### Edge Types
+
+| Category       | Types                                          |
+|----------------|------------------------------------------------|
+| Structural     | `CONTAINS`, `DEFINED_IN`, `PRECEDES`           |
+| Type system    | `EXTENDS`, `IMPLEMENTS`, `OVERRIDES`, `MIXES_IN`, `USES_TYPE` |
+| Call graph     | `CALLS`, `INSTANTIATES`                        |
+| Dependencies   | `IMPORTS`, `DEPENDS_ON`                        |
+| Documentation  | `DOCUMENTS`, `ANNOTATES`                       |
+| Cross-language | `IMPLEMENTS_PROTO`, `CALLS_RPC`, `SHARES_TYPE` |
+| Markdown       | `SECTION_OF`, `DOCUMENTS_DIR`                  |
+| Config         | `CONFIGURES`, `REFERENCES_CLASS`               |
 
 ### MCP Tool Categories
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    MCP / REST Tools                           │
-├──────────────┬───────────────────────────────────────────────┤
-│ Search       │ full-text search, name-based lookup            │
-│ Element      │ get details, code snippets, file outlines      │
-│ Structure    │ parent, children, siblings navigation          │
-│ TypeHierarchy│ supertypes, interfaces, subclasses, overrides  │
-│ CallGraph    │ callers, callees, call chains                  │
-│ Import       │ import/dependency analysis                     │
-│ Documentation│ comments, annotations extraction               │
-│ Connectivity │ shortest path, similarity scoring (FOAF)       │
-│ Repo         │ repository listing, management                 │
-│ IndexMgmt    │ trigger indexing, progress tracking             │
-└──────────────┴───────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph "MCP / REST Tools"
+        direction TB
+        S["Search<br/><i>full-text search, name lookup</i>"]
+        E["Element<br/><i>details, snippets, file outlines</i>"]
+        ST["Structure<br/><i>parent, children, siblings</i>"]
+        TH["TypeHierarchy<br/><i>supertypes, subclasses, overrides</i>"]
+        CG["CallGraph<br/><i>callers, callees, call chains</i>"]
+        IM["Import<br/><i>import/dependency analysis</i>"]
+        DOC["Documentation<br/><i>comments, annotations</i>"]
+        CON["Connectivity<br/><i>shortest path, FOAF similarity</i>"]
+        R["Repo<br/><i>repository listing, management</i>"]
+        IDX["IndexMgmt<br/><i>trigger indexing, progress</i>"]
+    end
 ```
 
 ## Prerequisites
