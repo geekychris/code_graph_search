@@ -658,9 +658,44 @@ public class GoVisitor extends TreeSitterParser {
             for (var call : body.findAll("call_expression")) {
                 var funcNode = call.getNamedChild("function").orElse(null);
                 if (funcNode == null) continue;
-                var funcText = nodeText(funcNode);
+                var funcText = nodeText(funcNode).trim();
+                if (funcText.isEmpty()) continue;
+
+                // Resolve target qname. Three shapes to handle:
+                //   1. `Bar()`         — unqualified, same package. Qname = <pkg>.Bar
+                //   2. `pkg.Bar()`     — qualified, another package. Qname = pkg.Bar
+                //   3. `x.Bar()`       — method call on receiver x. Qname
+                //                        can't be resolved without a type
+                //                        table; emit an edge using the last
+                //                        segment (Bar) so at least name-based
+                //                        lookups have something to hit.
                 var targetQName = funcText;
-                var targetId = CodeElement.generateId(repoId, filePath, ElementType.FUNCTION, targetQName);
+                var targetType = ElementType.FUNCTION;
+                var dotIdx = funcText.lastIndexOf('.');
+                if (dotIdx < 0) {
+                    // Unqualified — assume same package.
+                    if (!packageName.isEmpty()) {
+                        targetQName = packageName + "." + funcText;
+                    }
+                } else {
+                    // Qualified — could be package.Func OR receiver.Method.
+                    // If the prefix is a known struct in this package,
+                    // it's a method call; qname includes package + struct.
+                    // Otherwise treat it as pkg.Func and use funcText as-is
+                    // (best effort — real cross-package resolution needs
+                    // an import-aware symbol table).
+                    var prefix = funcText.substring(0, dotIdx);
+                    var name = funcText.substring(dotIdx + 1);
+                    var maybeStructQName = packageName.isEmpty()
+                            ? prefix
+                            : packageName + "." + prefix;
+                    if (structElementIds.containsKey(maybeStructQName)) {
+                        targetQName = maybeStructQName + "." + name;
+                        targetType = ElementType.METHOD;
+                    }
+                    // else: funcText already = "pkg.Func" — leave as-is.
+                }
+                var targetId = CodeElement.generateId(repoId, filePath, targetType, targetQName);
                 result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.CALLS));
             }
         }

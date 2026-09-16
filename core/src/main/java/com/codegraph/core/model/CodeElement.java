@@ -49,9 +49,28 @@ public class CodeElement {
 
     public CodeElement() {}
 
+    /**
+     * Compute the stable id for a code element.
+     *
+     * <p>Cross-file-referenceable declaration types (functions, methods,
+     * classes, interfaces, structs, enums, traits, packages, ...) hash
+     * from (repoId, type, qualifiedName) only — filePath is intentionally
+     * dropped so a reference to {@code pkg.Foo} from any caller resolves
+     * to the SAME id as the declaration of {@code pkg.Foo}, regardless of
+     * which file the reference lives in. Without this, cross-file CALLS,
+     * USES_TYPE, EXTENDS, IMPLEMENTS, and OVERRIDES edges all pointed
+     * to dangling ids and things like "get_callees" returned nothing.
+     *
+     * <p>Per-declaration-site types (comment lines, call sites, per-file
+     * imports, config keys, markdown sections, ...) still include
+     * filePath because they legitimately need per-file disambiguation —
+     * two files can both have a {@code COMMENT_LINE} at line 5 with the
+     * same text.
+     */
     public static String generateId(String repoId, String filePath, ElementType type, String qualifiedName) {
         try {
-            String raw = repoId + "|" + filePath + "|" + type.name() + "|" + qualifiedName;
+            String effectivePath = isCrossFileReferenceable(type) ? "" : (filePath == null ? "" : filePath);
+            String raw = repoId + "|" + effectivePath + "|" + type.name() + "|" + qualifiedName;
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(raw.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
@@ -62,6 +81,24 @@ public class CodeElement {
         } catch (Exception e) {
             return repoId + "_" + Math.abs(qualifiedName.hashCode());
         }
+    }
+
+    /**
+     * Types identified globally by (repo, type, qname). Anything a
+     * cross-file reference could point to lives here. Per-declaration-
+     * site types (COMMENT_LINE, CALL_SITE, IMPORT, ANNOTATION,
+     * ATTRIBUTE, MARKDOWN_HEADING, CONFIG_KEY, USE_DECLARATION, ...) are
+     * NOT in this list and retain their filePath component so two files
+     * with the same phenomenon at the same line don't collide.
+     */
+    private static boolean isCrossFileReferenceable(ElementType type) {
+        return switch (type) {
+            case PACKAGE, NAMESPACE, MODULE,
+                 CLASS, INTERFACE, ENUM, STRUCT, TRAIT, PROTOCOL, TYPE_ALIAS,
+                 CONSTRUCTOR, METHOD, FUNCTION, FIELD, PROPERTY, ENUM_CONSTANT
+                 -> true;
+            default -> false;
+        };
     }
 
     public void addMetadata(String key, String value) {
