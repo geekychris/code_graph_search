@@ -179,6 +179,46 @@ mvn package -DskipTests
 
 The output is a single fat JAR at `app/target/code-graph-search.jar`.
 
+### One-shot installer
+
+For a hands-off "clone + build + drop wrappers on PATH" flow use the
+included script:
+
+```bash
+bash scripts/install.sh
+```
+
+That will:
+
+- Verify prereqs (git, java 21+, mvn, npm) — fast-fails with an
+  `openjdk@21` install hint if anything's missing.
+- Clone (or `git pull`) the repo into
+  `~/Library/Caches/code_graph_search` (macOS) or
+  `$XDG_CACHE_HOME/code_graph_search` (linux).
+- Run `./build.sh` to produce the fat JAR.
+- Write wrapper scripts at `~/.local/bin/code-graph-search` +
+  `code-graph-mcp` so both modes are callable without knowing the
+  JAR's absolute path.
+
+Override via `CGS_INSTALL_DIR` / `CGS_BIN_DIR` / `CGS_REPO_URL` env
+vars if you want the source or the wrappers somewhere else.
+
+### Using with Chief
+
+[Chief](https://github.com/geekychris/chief) — a multi-project Claude
+Code orchestrator — integrates this project as a per-project code
+explorer. Once installed (`chief codegraph install` or the "Install"
+button in Chief.app), you can:
+
+```bash
+chief codegraph open <project>
+```
+
+Chief writes a per-project `.chief/code-graph.yaml` pinning `dataDir`
+to a project-scoped index (so different projects don't share graphs),
+launches the JAR on a stable per-project port, and opens the URL. On
+subsequent opens the running instance is reused.
+
 ## Configuration
 
 Copy and edit the example config:
