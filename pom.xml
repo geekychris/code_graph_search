@@ -196,11 +196,19 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>3.13.0</version>
                     <configuration>
-                        <source>21</source>
-                        <target>21</target>
-                        <compilerArgs>
-                            <arg>--enable-preview</arg>
-                        </compilerArgs>
+                        <!-- `release` (not source+target) so cross-compilation
+                             works cleanly on newer JDKs. Preview features are
+                             locked to the compiler's own release version, so
+                             a JDK 26 install cannot compile source=21 with
+                             the enable-preview flag. `release` targets Java
+                             21 bytecode regardless of the installed JDK. -->
+                        <release>21</release>
+                        <!-- enable-preview flag removed. Codebase audit
+                             found no preview-feature usage (no string
+                             templates, no unnamed variables, no when
+                             guards, no instance main). Add it back per
+                             module if a preview feature is genuinely
+                             needed later. -->
                     </configuration>
                 </plugin>
             </plugins>

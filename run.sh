@@ -16,4 +16,4 @@ if [ ! -f "$JAR" ]; then
   exit 1
 fi
 
-exec java --enable-preview -jar "$JAR" "$@"
+exec java -jar "$JAR" "$@"
