@@ -9,7 +9,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Tree-sitter based parser for Rust source files.
@@ -20,6 +22,23 @@ import java.util.List;
 public class RustVisitor extends TreeSitterParser {
 
     private static final Logger log = LoggerFactory.getLogger(RustVisitor.class);
+
+    /**
+     * Rust primitives + language reserved-word types + short generic
+     * parameters. Filtered out of USES_TYPE edges so the graph doesn't
+     * grow phantom "i32" / "String" / "Result" nodes for every function
+     * signature. Keeps the graph focused on user-defined types.
+     */
+    private static final Set<String> RUST_BUILTINS = Set.of(
+        "bool", "char", "str", "String", "i8", "i16", "i32", "i64", "i128",
+        "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
+        "Self", "Result", "Option", "Vec", "Box", "Arc", "Rc", "RefCell",
+        "Cell", "Mutex", "RwLock", "HashMap", "HashSet", "BTreeMap",
+        "BTreeSet", "VecDeque", "Cow", "Path", "PathBuf", "OsStr",
+        "OsString", "CStr", "CString", "Range", "RangeInclusive",
+        // Typical short generic type params
+        "T", "U", "V", "K", "E", "A", "B", "R"
+    );
 
     @Override
     public Language getLanguage() {
@@ -55,6 +74,9 @@ public class RustVisitor extends TreeSitterParser {
         final Deque<String> moduleStack = new ArrayDeque<>();
         // Element id stack for CONTAINS edges
         final Deque<String> containerIdStack = new ArrayDeque<>();
+        // IDs of elements declared during this parse — lets visitImpl
+        // decide whether to attach methods to a STRUCT or an ENUM.
+        final Set<String> declaredElementIds = new HashSet<>();
 
         RustContext(String repoId, String filePath, String[] sourceLines, ParseResult result) {
             this.repoId = repoId;
@@ -74,6 +96,8 @@ public class RustVisitor extends TreeSitterParser {
             el.setQualifiedName(qualifiedName);
             el.setFilePath(filePath);
             el.setId(CodeElement.generateId(repoId, filePath, type, qualifiedName));
+            // Track for visitImpl's STRUCT-vs-ENUM disambiguation.
+            declaredElementIds.add(el.getId());
             return el;
         }
 
@@ -143,6 +167,9 @@ public class RustVisitor extends TreeSitterParser {
                 case "function_item"   -> visitFunction(parent, node);
                 case "impl_item"       -> visitImpl(parent, node);
                 case "use_declaration" -> visitUse(node);
+                case "const_item"      -> visitConst(parent, node);
+                case "static_item"     -> visitStatic(parent, node);
+                case "type_item"       -> visitTypeAlias(parent, node);
                 case "attribute_item"  -> visitAttribute(node);
                 case "line_comment"    -> maybeLineComment(node);
                 case "block_comment"   -> maybeBlockComment(node);
@@ -206,6 +233,12 @@ public class RustVisitor extends TreeSitterParser {
                 fieldEl.setSnippet(nodeText(fd));
                 result.addElement(fieldEl);
                 addContains(el.getId(), fieldEl.getId());
+                // USES_TYPE from the field type — enables "who has an X field?"
+                for (var t : extractTypeNames(fieldType)) {
+                    var tid = CodeElement.generateId(repoId, filePath,
+                            ElementType.STRUCT, qualify(t));
+                    result.addEdge(new CodeEdge(fieldEl.getId(), tid, EdgeType.USES_TYPE));
+                }
             });
         }
 
@@ -284,6 +317,8 @@ public class RustVisitor extends TreeSitterParser {
                     params.findAll("parameter").forEach(p ->
                             p.getNamedChild("type").ifPresent(t -> paramTypes.add(nodeText(t)))));
             el.setParameterTypes(paramTypes);
+            emitUsesTypeEdges(el, paramTypes,
+                    node.getNamedChild("return_type").map(this::nodeText).orElse(""));
 
             // Visibility
             node.getNamedChild("visibility_modifier").ifPresent(v -> el.setVisibility(nodeText(v)));
@@ -313,12 +348,24 @@ public class RustVisitor extends TreeSitterParser {
 
             var typeQName = qualify(typeName);
 
-            // MIXES_IN edge if impl Trait for Type
+            // Type ID could be a STRUCT or an ENUM — impl blocks work on
+            // both. Try STRUCT first (more common); the same qualified
+            // name over an ENUM element would just miss and land on a
+            // dangling id, which is fine for search but wrong for
+            // CONTAINS traversal. Rely on the caller to have declared
+            // the type first (same file, prior item).
+            var typeId = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, typeQName);
+            // If a same-name ENUM was declared, prefer that id.
+            var enumId = CodeElement.generateId(repoId, filePath, ElementType.ENUM, typeQName);
+            var effectiveTypeId = declaredElementIds.contains(enumId) ? enumId : typeId;
+
+            // IMPLEMENTS edge (was MIXES_IN — MIXES_IN is for mixin-style
+            // inclusion, e.g. Ruby modules; concrete-type-implements-
+            // trait is IMPLEMENTS in the EdgeType enum's docs).
             if (traitName != null) {
-                var typeId = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, typeQName);
                 var traitQName = qualify(traitName);
                 var traitId = CodeElement.generateId(repoId, filePath, ElementType.TRAIT, traitQName);
-                result.addEdge(new CodeEdge(typeId, traitId, EdgeType.MIXES_IN));
+                result.addEdge(new CodeEdge(effectiveTypeId, traitId, EdgeType.IMPLEMENTS));
             }
 
             // Visit methods in the impl block as METHOD elements
@@ -329,9 +376,10 @@ public class RustVisitor extends TreeSitterParser {
                             .orElse(fn.nameText());
                     var methodQName = qualify(fnName);
 
-                    // Override element type
                     var el = newElement(ElementType.METHOD, methodQName);
                     el.setName(fnName);
+                    el.addMetadata("receiverType", typeName);
+                    if (traitName != null) el.addMetadata("traitImpl", traitName);
                     setPosition(el, fn);
                     el.setSnippet(truncate(nodeText(fn), MAX_SNIPPET_LINES));
 
@@ -343,15 +391,27 @@ public class RustVisitor extends TreeSitterParser {
                             params.findAll("parameter").forEach(p ->
                                     p.getNamedChild("type").ifPresent(t -> paramTypes.add(nodeText(t)))));
                     el.setParameterTypes(paramTypes);
+                    emitUsesTypeEdges(el, paramTypes,
+                            fn.getNamedChild("return_type").map(this::nodeText).orElse(""));
 
                     extractAttributes(body, fn, el);
                     var doc = collectDocComment(body, fn);
                     if (doc != null) { el.setDocComment(doc); addDocElement(doc, el); }
 
                     result.addElement(el);
-                    // CONTAINS: the impl'd type → method
-                    var typeId = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, typeQName);
-                    result.addEdge(new CodeEdge(typeId, el.getId(), EdgeType.CONTAINS));
+                    // CONTAINS: the impl'd type → method. Uses whichever
+                    // element type we detected above.
+                    result.addEdge(new CodeEdge(effectiveTypeId, el.getId(), EdgeType.CONTAINS));
+
+                    // OVERRIDES edge if this method comes from a trait impl.
+                    // Target id is speculative (assumes trait method has same
+                    // qname under the trait); post-pass could refine.
+                    if (traitName != null) {
+                        var traitMethodQName = qualify(traitName) + "::" + fnName;
+                        var traitMethodId = CodeElement.generateId(repoId, filePath,
+                                ElementType.METHOD, traitMethodQName);
+                        result.addEdge(new CodeEdge(el.getId(), traitMethodId, EdgeType.OVERRIDES));
+                    }
                 });
                 moduleStack.pop();
             });
@@ -365,6 +425,161 @@ public class RustVisitor extends TreeSitterParser {
             setPosition(el, node);
             el.setSnippet(text);
             result.addElement(el);
+
+            // Also emit IMPORTS edges to each imported path. Rust's
+            // `use foo::bar::{Baz, Qux};` fans out to two imports:
+            //   foo::bar::Baz  and  foo::bar::Qux.
+            // The target ids assume same-crate resolution; cross-crate
+            // resolution needs a repo-wide post-pass which is out of
+            // scope for the per-file parser.
+            for (var importedPath : expandUsePath(node)) {
+                var importQName = qualify(importedPath);
+                // Try TRAIT first (traits are often the target of `use`),
+                // then STRUCT. Both ids are speculative — real resolution
+                // would need a symbol table.
+                var traitTarget = CodeElement.generateId(repoId, filePath, ElementType.TRAIT, importQName);
+                result.addEdge(new CodeEdge(el.getId(), traitTarget, EdgeType.IMPORTS));
+            }
+        }
+
+        /**
+         * Expand a use_declaration into the individual imported paths.
+         * Handles the common forms:
+         *   - use foo::bar::Baz;              → ["foo::bar::Baz"]
+         *   - use foo::bar::*;                → ["foo::bar"]
+         *   - use foo::bar::{Baz, Qux};       → ["foo::bar::Baz", "foo::bar::Qux"]
+         *   - use foo::bar::Baz as B;         → ["foo::bar::Baz"]
+         * Falls back to the raw text if the shape is unfamiliar.
+         */
+        List<String> expandUsePath(SExprNode useNode) {
+            var out = new ArrayList<String>();
+            // The interesting child is a scoped_use_list, use_list, or
+            // scoped_identifier. Best effort — probe for named children
+            // that look right.
+            var argument = useNode.getNamedChild("argument")
+                    .or(() -> useNode.findFirst("scoped_use_list"))
+                    .or(() -> useNode.findFirst("scoped_identifier"))
+                    .or(() -> useNode.findFirst("use_list"));
+            if (argument.isEmpty()) return out;
+            var arg = argument.get();
+            if (arg.getType().equals("scoped_use_list")) {
+                // path :: { list of leaves }
+                var path = arg.getNamedChild("path").map(this::nodeText).orElse("");
+                var list = arg.getNamedChild("list").orElse(arg);
+                for (var child : list.getChildren()) {
+                    var t = child.getType();
+                    if (t.equals("identifier") || t.equals("self")) {
+                        var leaf = nodeText(child);
+                        if (leaf.equals("self")) {
+                            out.add(path);
+                        } else {
+                            out.add(path.isEmpty() ? leaf : path + "::" + leaf);
+                        }
+                    }
+                }
+            } else {
+                out.add(nodeText(arg).replaceAll("\\s+as\\s+\\w+", ""));
+            }
+            return out;
+        }
+
+        void visitConst(SExprNode parent, SExprNode node) {
+            visitValueItem(parent, node, "const");
+        }
+
+        void visitStatic(SExprNode parent, SExprNode node) {
+            visitValueItem(parent, node, "static");
+        }
+
+        /**
+         * Shared handler for const_item + static_item. Emits a FIELD
+         * element with metadata.rustValueKind = const|static so downstream
+         * tools can distinguish (there's no separate ElementType.CONST yet).
+         */
+        void visitValueItem(SExprNode parent, SExprNode node, String kind) {
+            var name = node.getNamedChild("name").map(this::nodeText).orElse(node.nameText());
+            if (name.isBlank()) return;
+            var typeText = node.getNamedChild("type").map(this::nodeText).orElse("");
+            var qname = qualify(name);
+            var el = newElement(ElementType.FIELD, qname);
+            el.setName(name);
+            el.setReturnType(typeText);
+            el.addMetadata("rustValueKind", kind);
+            setPosition(el, node);
+            el.setSnippet(nodeText(node));
+
+            extractAttributes(parent, node, el);
+            var doc = collectDocComment(parent, node);
+            if (doc != null) { el.setDocComment(doc); addDocElement(doc, el); }
+
+            result.addElement(el);
+            if (!containerIdStack.isEmpty()) addContains(containerIdStack.peek(), el.getId());
+
+            // USES_TYPE from the declared type.
+            for (var t : extractTypeNames(typeText)) {
+                var tid = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, qualify(t));
+                result.addEdge(new CodeEdge(el.getId(), tid, EdgeType.USES_TYPE));
+            }
+        }
+
+        void visitTypeAlias(SExprNode parent, SExprNode node) {
+            var name = node.getNamedChild("name").map(this::nodeText).orElse(node.nameText());
+            if (name.isBlank()) return;
+            var qname = qualify(name);
+            var el = newElement(ElementType.TYPE_ALIAS, qname);
+            el.setName(name);
+            var aliasedType = node.getNamedChild("type").map(this::nodeText).orElse("");
+            el.setReturnType(aliasedType);
+            setPosition(el, node);
+            el.setSnippet(nodeText(node));
+
+            extractAttributes(parent, node, el);
+            var doc = collectDocComment(parent, node);
+            if (doc != null) { el.setDocComment(doc); addDocElement(doc, el); }
+
+            result.addElement(el);
+            if (!containerIdStack.isEmpty()) addContains(containerIdStack.peek(), el.getId());
+            for (var t : extractTypeNames(aliasedType)) {
+                var tid = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, qualify(t));
+                result.addEdge(new CodeEdge(el.getId(), tid, EdgeType.USES_TYPE));
+            }
+        }
+
+        /**
+         * Emit one USES_TYPE edge per distinct type name mentioned in
+         * the signature. Filters out primitives and short generic
+         * parameters. Same-crate ids only.
+         */
+        void emitUsesTypeEdges(CodeElement fn, List<String> paramTypes, String returnType) {
+            var types = new HashSet<String>();
+            for (var pt : paramTypes) types.addAll(extractTypeNames(pt));
+            types.addAll(extractTypeNames(returnType));
+            for (var t : types) {
+                var tid = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, qualify(t));
+                result.addEdge(new CodeEdge(fn.getId(), tid, EdgeType.USES_TYPE));
+            }
+        }
+
+        /**
+         * Extract identifier-shaped type names from a Rust type
+         * expression. Handles references, generics, paths, tuples,
+         * arrays. Best effort — this is a tokeniser, not a Rust type
+         * parser. Filters out builtins so the graph doesn't get spammed
+         * with edges to phantom "i32" / "String" / "Result" nodes.
+         */
+        Set<String> extractTypeNames(String typeText) {
+            if (typeText == null || typeText.isBlank()) return Set.of();
+            var out = new HashSet<String>();
+            for (var tok : typeText.split("[^A-Za-z0-9_:]+")) {
+                if (tok.isBlank()) continue;
+                // Path: mod::sub::Type — take the last segment.
+                var lastSep = tok.lastIndexOf("::");
+                var t = lastSep >= 0 ? tok.substring(lastSep + 2) : tok;
+                if (t.isBlank() || Character.isLowerCase(t.charAt(0))) continue;
+                if (RUST_BUILTINS.contains(t)) continue;
+                out.add(t);
+            }
+            return out;
         }
 
         void visitAttribute(SExprNode node) {
