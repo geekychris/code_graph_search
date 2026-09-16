@@ -3,6 +3,8 @@ package com.codegraph.core.config;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -11,6 +13,8 @@ import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class AppConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(AppConfig.class);
 
     private List<RepoConfig> repos = new ArrayList<>();
     private IndexerConfig indexer = new IndexerConfig();
@@ -78,11 +82,22 @@ public class AppConfig {
     }
 
     public static AppConfig loadOrDefault(String path) {
+        File f = new File(path);
+        if (!f.exists()) {
+            log.info("Config file not found at {}; using defaults (port 8080, no repos)", path);
+            return new AppConfig();
+        }
         try {
-            File f = new File(path);
-            if (f.exists()) return load(path);
-        } catch (Exception ignored) {}
-        return new AppConfig();
+            return load(path);
+        } catch (Exception e) {
+            // Previously this was silently swallowed, which produced very
+            // confusing behavior: the app would start with an empty config
+            // (port 8080, no repos indexed) and users had no clue why.
+            // Log loudly so parse failures actually surface.
+            log.error("Failed to parse config at {}: {}", path, e.getMessage());
+            log.error("Falling back to defaults (port 8080, no repos). Fix the config and restart.", e);
+            return new AppConfig();
+        }
     }
 
     // Getters and setters
