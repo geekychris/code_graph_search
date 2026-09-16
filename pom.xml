@@ -19,6 +19,7 @@
         <module>rest</module>
         <module>ui</module>
         <module>app</module>
+        <module>desktop</module>
         <module>tests</module>
     </modules>
 
