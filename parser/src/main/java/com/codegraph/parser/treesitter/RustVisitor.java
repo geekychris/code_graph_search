@@ -331,14 +331,61 @@ public class RustVisitor extends TreeSitterParser {
             if (!containerIdStack.isEmpty()) addContains(containerIdStack.peek(), el.getId());
 
             // Calls
-            node.getNamedChild("body").ifPresent(body ->
-                    body.findAll("call_expression").forEach(call -> {
-                        var funcText = call.getNamedChild("function")
-                                .map(f -> nodeText(f)).orElse("");
-                        var targetId = CodeElement.generateId(repoId, filePath,
-                                ElementType.FUNCTION, funcText);
-                        result.addEdge(new CodeEdge(el.getId(), targetId, EdgeType.CALLS));
-                    }));
+            node.getNamedChild("body").ifPresent(body -> extractRustCalls(body, el));
+        }
+
+        /**
+         * Extract call-expression targets from a function body. Mirrors
+         * the GoVisitor cross-file fix: resolve the target qname so it
+         * matches the (repo, type, qname)-hashed id of the actual
+         * declaration, regardless of which file the call lives in.
+         *
+         * Three shapes:
+         *   1. `bar()`               — unqualified. Prepend current
+         *                              module path so `crate::foo::bar`.
+         *   2. `Type::method(...)`   — associated function / trait method
+         *                              on a locally-known type. Qname =
+         *                              `<module>::Type::method`, type =
+         *                              METHOD.
+         *   3. `foo::bar::baz()`     — cross-module call. Use as-is (best
+         *                              effort — full path resolution needs
+         *                              an import-aware symbol table).
+         */
+        void extractRustCalls(SExprNode body, CodeElement caller) {
+            for (var call : body.findAll("call_expression")) {
+                var funcText = call.getNamedChild("function")
+                        .map(f -> nodeText(f).trim()).orElse("");
+                if (funcText.isEmpty()) continue;
+
+                var targetQName = funcText;
+                var targetType = ElementType.FUNCTION;
+                var lastSep = funcText.lastIndexOf("::");
+                if (lastSep < 0) {
+                    // Unqualified call: assume same module.
+                    var mod = currentModule();
+                    if (!mod.isEmpty()) targetQName = mod + "::" + funcText;
+                } else {
+                    var prefix = funcText.substring(0, lastSep);
+                    var name = funcText.substring(lastSep + 2);
+                    // If the prefix is a locally-declared type, treat it
+                    // as a method call on that type. Try STRUCT, ENUM,
+                    // TRAIT ids — same "which declared kind is this?"
+                    // check visitImpl uses.
+                    var typeQName = qualify(prefix);
+                    var structId = CodeElement.generateId(repoId, filePath, ElementType.STRUCT, typeQName);
+                    var enumId   = CodeElement.generateId(repoId, filePath, ElementType.ENUM, typeQName);
+                    var traitId  = CodeElement.generateId(repoId, filePath, ElementType.TRAIT, typeQName);
+                    if (declaredElementIds.contains(structId)
+                            || declaredElementIds.contains(enumId)
+                            || declaredElementIds.contains(traitId)) {
+                        targetQName = typeQName + "::" + name;
+                        targetType = ElementType.METHOD;
+                    }
+                    // else: cross-module — leave targetQName = funcText.
+                }
+                var targetId = CodeElement.generateId(repoId, filePath, targetType, targetQName);
+                result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.CALLS));
+            }
         }
 
         void visitImpl(SExprNode parent, SExprNode node) {

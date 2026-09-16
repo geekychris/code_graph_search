@@ -91,6 +91,11 @@ public class JavaSourceParser implements LanguageParser {
 
         private String packageName = "";
         private String packageElementId = null;
+        // Fully-qualified class names imported by this file (non-wildcard,
+        // non-static). Used by qualifyClassRef in the call-target
+        // resolver so `SomeClass.method()` calls find the actual
+        // declaration across files.
+        private final java.util.Set<String> importedClassQNames = new java.util.HashSet<>();
 
         JavaAstVisitor(String repoId, String filePath, ParseResult result) {
             this.repoId = repoId;
@@ -230,6 +235,11 @@ public class JavaSourceParser implements LanguageParser {
             applyPosition(el, imp);
             el.setSnippet(imp.toString().trim());
             result.addElement(el);
+            // Track non-wildcard imports for call-target class-ref
+            // resolution (see qualifyClassRef in extractCallsFromNode).
+            if (!imp.isAsterisk() && !imp.isStatic()) {
+                importedClassQNames.add(imp.getNameAsString());
+            }
         }
 
         // ---- Type declarations -----------------------------------------------
@@ -320,7 +330,11 @@ public class JavaSourceParser implements LanguageParser {
                     .map(p -> p.getType().asString())
                     .collect(Collectors.toList());
             var sig = decl.getNameAsString() + "(" + String.join(",", paramTypes) + ")";
-            var qname = ownerQName + "#" + sig;
+            // See the equivalent block in visit(MethodDeclaration): qname
+            // is name-only so cross-file references (INSTANTIATES edges
+            // from `new Foo(...)`) match a name-based lookup without
+            // needing to resolve caller arg types.
+            var qname = ownerQName + "#" + decl.getNameAsString();
 
             var el = newElement(ElementType.CONSTRUCTOR, qname);
             el.setName(decl.getNameAsString());
@@ -352,7 +366,13 @@ public class JavaSourceParser implements LanguageParser {
                     .map(p -> p.getType().asString())
                     .collect(Collectors.toList());
             var sig = decl.getNameAsString() + "(" + String.join(",", paramTypes) + ")";
-            var qname = ownerQName + "#" + sig;
+            // Qname is name-only (no arg-type suffix) so cross-file call
+            // extraction can match by owner + method-name without needing
+            // a full symbol solver to resolve caller arg types to
+            // declared param types. Overloads collapse in the graph;
+            // Signature field still carries the full arg-typed signature
+            // for display + downstream disambiguation.
+            var qname = ownerQName + "#" + decl.getNameAsString();
 
             var el = newElement(ElementType.METHOD, qname);
             el.setName(decl.getNameAsString());
@@ -392,15 +412,38 @@ public class JavaSourceParser implements LanguageParser {
         private void extractCallsFromNode(com.github.javaparser.ast.Node node, CodeElement caller) {
             node.findAll(MethodCallExpr.class).forEach(call -> {
                 var methodName = call.getNameAsString();
-                // Try to determine scope/target class
-                String targetClass = call.getScope()
-                        .map(s -> s.toString())
-                        .orElse(typeQNameStack.isEmpty() ? "" : typeQNameStack.peek());
-                var callArgTypes = call.getArguments().stream()
-                        .map(a -> "?")
-                        .collect(Collectors.joining(","));
-                var targetQName = targetClass + "#" + methodName + "(" + callArgTypes + ")";
-                // We don't know the exact target file so use a synthetic id
+                // Resolve the target class qname. Two shapes:
+                //   1. Unqualified `bar()` — no scope. Assume same class
+                //      (top of the type stack). Cross-file-safe because
+                //      typeQNameStack.peek() is already the fully-
+                //      qualified class name.
+                //   2. Qualified `foo.bar()` — scope present. If the
+                //      scope is source text that matches a known class
+                //      name (PascalCase or matches an import), use it;
+                //      otherwise it's a variable + we can't resolve
+                //      without a SymbolSolver. Fall back to same-class
+                //      as best effort.
+                String targetClass;
+                if (call.getScope().isEmpty()) {
+                    targetClass = typeQNameStack.isEmpty() ? "" : typeQNameStack.peek();
+                } else {
+                    var scopeText = call.getScope().get().toString().trim();
+                    if (isLikelyClassName(scopeText)) {
+                        // PascalCase — treat as a class reference. Try
+                        // to qualify via package or import; fall back
+                        // to raw text.
+                        targetClass = qualifyClassRef(scopeText);
+                    } else {
+                        // Variable reference — real resolution needs a
+                        // SymbolSolver we don't have. Same-class fallback
+                        // catches the common `this.bar()` case.
+                        targetClass = typeQNameStack.isEmpty() ? "" : typeQNameStack.peek();
+                    }
+                }
+                // Name-only qname to match the declaration side (which
+                // also switched to name-only for cross-file callability
+                // — arg-typed signature lives in Signature field).
+                var targetQName = targetClass + "#" + methodName;
                 var targetId = CodeElement.generateId(repoId, filePath, ElementType.METHOD, targetQName);
                 result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.CALLS));
             });
@@ -411,6 +454,39 @@ public class JavaSourceParser implements LanguageParser {
                 var targetId = CodeElement.generateId(repoId, filePath, ElementType.CLASS, targetQName);
                 result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.INSTANTIATES));
             });
+        }
+
+        /**
+         * Heuristic: does this look like a Java class name? Starts with
+         * uppercase, is a single identifier (no dots/parens/brackets),
+         * doesn't look like a constant (all caps + underscore is a
+         * constant convention, not a class).
+         */
+        private boolean isLikelyClassName(String s) {
+            if (s.isEmpty() || !Character.isUpperCase(s.charAt(0))) return false;
+            if (s.contains("(") || s.contains("[") || s.contains(".")) return false;
+            // ALL_CAPS_WITH_UNDERSCORES is typically a constant, not a class.
+            var allCaps = true;
+            for (var c : s.toCharArray()) {
+                if (Character.isLowerCase(c)) { allCaps = false; break; }
+            }
+            if (allCaps && s.contains("_")) return false;
+            return true;
+        }
+
+        /**
+         * Turn a bare class name (`Foo`) into its qualified form using
+         * the current package + import list. Falls back to the raw name
+         * if no import matches (java.lang.* is implicit but rarely
+         * called via static-method style).
+         */
+        private String qualifyClassRef(String simpleName) {
+            // Try imports first — an `import a.b.Foo;` maps simple name Foo → a.b.Foo.
+            for (var imp : importedClassQNames) {
+                if (imp.endsWith("." + simpleName)) return imp;
+            }
+            // Fall back to same-package qualification.
+            return packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
         }
 
         @Override
@@ -473,14 +549,21 @@ public class JavaSourceParser implements LanguageParser {
         // ---- Utility --------------------------------------------------------
 
         private String resolveTypeName(ClassOrInterfaceType type) {
-            // Try to use the fully qualified form if available
-            var sb = new StringBuilder();
-            type.getScope().ifPresent(scope -> sb.append(scope.asString()).append("."));
-            sb.append(type.getNameAsString());
-            return sb.toString();
+            // Use fully-qualified form if the source has one; otherwise
+            // look up in imports + fall back to same-package.
+            if (type.getScope().isPresent()) {
+                return type.getScope().get().asString() + "." + type.getNameAsString();
+            }
+            return qualifyClassRef(type.getNameAsString());
         }
 
         private String resolveTypeName(Type type) {
+            // Also try to qualify a plain type expression when it's a
+            // ClassOrInterfaceType — the earlier overload only fires
+            // when the caller has the specific subclass in hand.
+            if (type instanceof ClassOrInterfaceType coit) {
+                return resolveTypeName(coit);
+            }
             return type.asString();
         }
     }
