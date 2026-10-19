@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Code Graph Search logo" width="180">
+</p>
+
 # Code Graph Search
 
 A multi-language code analysis platform that builds a searchable graph representation of source code. It parses repositories across 8+ languages, extracts structural relationships (calls, inheritance, containment, dependencies), and exposes the graph via a REST API, interactive web UI, and MCP server for AI assistant integration.
