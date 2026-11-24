@@ -2,8 +2,8 @@
 
 Code Graph Search can index every repository that one or more GitHub accounts own,
 keep the index current as you push, and serve it to people, agents and other services
-with access control. This is the first step of the portfolio code graph design
-(multi-repo dependencies, contracts and concepts come in later phases).
+with access control. It covers the first two phases of the portfolio code graph design: the
+service itself and cross-repo dependencies. Contracts and concepts come later.
 
 ## What it does
 
@@ -62,6 +62,26 @@ The GitHub token needs read access to repository contents and metadata. It is pa
 to git through environment-based config, never on the command line or written to
 `.git/config`.
 
+## Dependencies across repos
+
+After every index of a repo, its build manifests are read (nothing is executed) and
+the portfolio dependency graph is rebuilt:
+
+- **Maven** (parents, properties, dependency management, in-repo BOMs), **Gradle**
+  (Groovy and Kotlin DSL, version catalogs, `project(...)`), **Go** (`require`,
+  `replace`, including `=> ../sibling` checkouts), **npm** (workspaces, `file:`),
+  **Cargo** (workspace inheritance) and **Python** (`pyproject.toml`, requirements).
+- A dependency on an artifact another repo produces, or on a sibling checkout, is an
+  edge between the two repos. Everything else counts as external.
+- Code is linked across those edges: Java calls, `extends`, `implements`, `new` and
+  imports that point at a type in a library repo are connected to the real element,
+  so `get_callers` on a library method also lists callers in other repos. Only repos
+  in the dependency closure are searched.
+
+MCP tools: `repo_dependencies`, `repo_dependents`, `dependency_layers` (release
+order and cycles), `drift_report`, `find_artifact_users`, `portfolio_dependency_stats`.
+All of them leave out repos the caller can't see.
+
 ## Endpoints
 
 | Route | What |
@@ -72,6 +92,11 @@ to git through environment-based config, never on the command line or written to
 | `POST /api/portfolio/repos/{id}/refresh` | Fetch and re-index one repo (admin) |
 | `POST /api/hooks/github` | GitHub webhook; verified with `X-Hub-Signature-256` |
 | `GET /api/repos` | Repos the caller can see, with visibility, source and indexed commit |
+| `GET /api/deps/repos/{id}` | A repo's modules, produced artifacts, dependencies, dependents and externals |
+| `GET /api/deps/edges` | All repo-to-repo dependency edges |
+| `GET /api/deps/layers?prefix=` | Layer (release) order and cycles |
+| `GET /api/deps/drift` | Consumers on a different version than the producer |
+| `GET /api/deps/artifacts?key=` | Producers and users of one artifact |
 
 ## Deploying
 
