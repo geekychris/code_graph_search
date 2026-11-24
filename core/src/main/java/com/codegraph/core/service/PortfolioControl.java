@@ -14,6 +14,11 @@ public interface PortfolioControl {
     /** Queues a fetch and re-index of one tracked repo. False if the repo is unknown. */
     boolean enqueue(String repoId);
 
+    /** Like {@link #enqueue(String)}; with {@code full}, re-parses every file even at the same commit. */
+    default boolean enqueue(String repoId, boolean full) {
+        return enqueue(repoId);
+    }
+
     /** Last sync report and queued/running jobs. */
     Map<String, Object> status();
 
