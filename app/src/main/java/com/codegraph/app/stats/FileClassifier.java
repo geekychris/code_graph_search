@@ -141,7 +141,9 @@ public final class FileClassifier {
             "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages",
             "class", "o", "obj", "a", "so", "dylib", "dll", "exe", "bin", "dat", "db", "sqlite", "sqlite3", "parquet",
             "avro", "orc", "npy", "npz", "pkl", "pt", "onnx", "safetensors", "gguf", "stl", "3mf", "glb", "gltf", "fbx", "blend",
-            "wasm", "pyc", "lib", "rom", "iff", "ilbm", "8svx", "amos", "prg", "atr", "xex", "st", "msa", "dsk");
+            "wasm", "pyc", "lib", "rom", "iff", "ilbm", "8svx", "amos", "prg", "atr", "xex", "st", "msa", "dsk",
+            "usdz", "usd", "rlib", "rmeta", "tar", "node", "ser", "epub", "wmv", "step", "stp", "ibd", "dyld", "jks",
+            "keystore", "p12", "der", "icc", "swf", "fla", "xcarchive", "car", "nib");
 
     private static final Set<String> TEST_DIRS = Set.of("test", "tests", "__tests__", "spec", "specs", "testing", "testdata",
             "test-data", "e2e", "it", "integration-tests", "fixtures", "__mocks__", "mocks", "androidtest", "unittest", "unittests");
@@ -182,6 +184,35 @@ public final class FileClassifier {
     public static boolean binaryByName(String path) {
         String ext = extension(baseName(path));
         return ext != null && BINARY.contains(ext);
+    }
+
+    /** Text files this long, in a data-like language, are data rather than docs or config. */
+    static final long DATA_LINES = 5000;
+    /** Files of an unknown type this long are data. */
+    static final long OTHER_DATA_LINES = 1000;
+    private static final Set<String> BULK_LANGS = Set.of("Text", "JSON", "CSV", "XML", "YAML");
+
+    /**
+     * The file's kind, given its line count: as {@link #kind(String, String, boolean)}, but
+     * large text in a data-like language (word lists, corpora, dumps) is data.
+     */
+    public static String kind(String path, String language, boolean binary, long lines) {
+        String k = kind(path, language, binary);
+        if ("generated".equals(k) || "asset".equals(k) || "test".equals(k)) return k;
+        if (language == null && lines > OTHER_DATA_LINES) return "data";
+        if (language != null && BULK_LANGS.contains(language) && lines > DATA_LINES
+                && !DOC_NAMES.contains(stemOf(path))) return "data";
+        return k;
+    }
+
+    private static String stemOf(String path) {
+        String name = baseName(path).toLowerCase(Locale.ROOT);
+        return name.contains(".") ? name.substring(0, name.indexOf('.')) : name;
+    }
+
+    /** Whether a file is counted by size only, though it's text (SVG drawings). */
+    public static boolean sizeOnly(String path) {
+        return "svg".equals(extension(baseName(path)));
     }
 
     /**

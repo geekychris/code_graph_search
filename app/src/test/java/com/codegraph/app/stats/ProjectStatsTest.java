@@ -54,6 +54,13 @@ class ProjectStatsTest {
                     .as("kind of " + path).isEqualTo(c[2]);
         }
         assertThat(FileClassifier.binaryByName("art/title.iff")).isTrue();
+        // large text in a data-like language is data; README stays docs however long
+        assertThat(FileClassifier.kind("words/english.txt", "Text", false, 200_000)).isEqualTo("data");
+        assertThat(FileClassifier.kind("words/english.txt", "Text", false, 200)).isEqualTo("docs");
+        assertThat(FileClassifier.kind("README.txt", "Text", false, 200_000)).isEqualTo("docs");
+        assertThat(FileClassifier.kind("dict/index.noun", null, false, 50_000)).isEqualTo("data");
+        assertThat(FileClassifier.kind("src/Big.java", "Java", false, 50_000)).isEqualTo("source");
+        assertThat(FileClassifier.sizeOnly("logo.svg")).isTrue();
         assertThat(FileClassifier.kind("art/title.png", null, true)).isEqualTo("asset");
     }
 
@@ -101,9 +108,10 @@ class ProjectStatsTest {
         write(dir, "node_modules/lib/index.js", "module.exports = 1;\n");
         write(dir, "untracked.txt", "not added to git\n");
         Files.write(dir.resolve("logo.png"), new byte[]{(byte) 0x89, 'P', 'N', 'G', 0, 0, 1});
+        write(dir, "icon.svg", "<svg>\n<rect/>\n</svg>\n");
         Files.write(dir.resolve("data.bin.txt"), new byte[]{'a', 0, 'b'}); // NUL byte: binary whatever the name
         git(dir, "init", "-q");
-        git(dir, "add", "src", "README.md", "pom.xml", "node_modules", "logo.png", "data.bin.txt");
+        git(dir, "add", "src", "README.md", "pom.xml", "node_modules", "logo.png", "data.bin.txt", "icon.svg");
         git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
 
         RepoStats s = StatsScanner.scan(dir, "demo", "abc123");
@@ -114,11 +122,11 @@ class ProjectStatsTest {
         assertThat(kinds.get("test").files).isEqualTo(1);
         assertThat(kinds.get("docs").lines).isEqualTo(3);
         assertThat(kinds.get("build").files).isEqualTo(1);
-        assertThat(kinds.get("asset").files).isEqualTo(2);
-        assertThat(kinds.get("asset").lines).isZero();
+        assertThat(kinds.get("asset").files).isEqualTo(3);   // png, NUL-byte file, svg
+        assertThat(kinds.get("asset").lines).isZero();       // svg is size only
         assertThat(s.byLanguage()).containsKeys("Java", "Markdown", "XML", "Binary").doesNotContainKey("JavaScript");
         assertThat(s.excluded()).isEqualTo(1);           // node_modules
-        assertThat(s.totals().files).isEqualTo(6);       // untracked.txt isn't counted
+        assertThat(s.totals().files).isEqualTo(7);       // untracked.txt isn't counted
         assertThat(s.byDir()).containsKeys("src", ".");
         assertThat(s.largest()).extracting(RepoStats.FileLines::path).first().isEqualTo("src/main/java/a/Foo.java");
         assertThat(s.revision()).isEqualTo(StatsScanner.REVISION);

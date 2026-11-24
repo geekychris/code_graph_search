@@ -22,7 +22,11 @@ Counting reads files only. On this repo it takes about a second.
 
 - **Which files:** every file git tracks at the indexed commit (`git ls-files`), so ignored and untracked build output never counts. A directory that isn't a git checkout is walked instead.
 - **Skipped as vendored or build output:** files under `node_modules`, `bower_components`, `vendor`, `third_party`, `thirdparty`, `.venv`, `venv`, `site-packages`, `__pycache__`, `.tox`, `dist`, `target`, `.idea`, `.gradle`, `Pods`, `.yarn`, `.pnpm-store`, `Carthage`, `.next`, `.nuxt` and `.terraform`. They're reported as `excluded`, a count only.
-- **Size only:** files with a binary extension, files containing a NUL byte, and files over 4 MB are counted by file and size, with no lines.
+- **Size only:** these are counted by file and size, with no lines:
+  - files with a binary extension;
+  - files containing a NUL byte;
+  - SVG drawings;
+  - files over 4 MB.
 
 ### Languages
 
@@ -48,7 +52,7 @@ Decided in this order: the first rule that matches wins.
 | `docs` | Markdown, AsciiDoc, reStructuredText, plain text and TeX; README, LICENSE, CHANGELOG and the like; prose under `docs/` (code there stays source) |
 | `build` | `pom.xml`, `build.gradle*`, `package.json`, `go.mod`, `Cargo.toml`, `Makefile`, `CMakeLists.txt`, `Dockerfile*`, `docker-compose*.yml`, `pyproject.toml`, `requirements*.txt`, `tsconfig.json`, bundler configs, … |
 | `config` | JSON, YAML, TOML, INI, properties, XML, HCL, Nix, ignore lists (Kubernetes manifests land here) |
-| `data` | CSV/TSV, patches |
+| `data` | CSV/TSV and patches; and, whatever the rules above say (short of generated, asset or test), large text: a file of unknown type over 1,000 lines, or plain text, JSON, CSV, XML or YAML over 5,000 lines (word lists, corpora, dumps). A README stays docs however long. |
 | `source` | everything else in a known language |
 | `other` | unknown text |
 

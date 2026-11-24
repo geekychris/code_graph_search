@@ -24,7 +24,7 @@ public final class StatsScanner {
     private static final Logger log = LoggerFactory.getLogger(StatsScanner.class);
 
     /** Bump when classification or counting changes: stored stats with another revision are recounted. */
-    public static final int REVISION = 1;
+    public static final int REVISION = 2;
 
     /** Files bigger than this are counted by size only (no lines). */
     static final long MAX_TEXT_BYTES = 4L << 20;
@@ -54,7 +54,7 @@ public final class StatsScanner {
             Counts c = new Counts();
             c.files = 1;
             c.bytes = size;
-            if (!binary && size <= MAX_TEXT_BYTES) {
+            if (!binary && size <= MAX_TEXT_BYTES && !FileClassifier.sizeOnly(rel)) {
                 byte[] bytes = Files.readAllBytes(p);
                 if (hasNul(bytes)) {
                     binary = true;
@@ -70,7 +70,7 @@ public final class StatsScanner {
                 }
             }
             String language = binary ? "Binary" : lang == null ? "Other" : lang.name();
-            String kind = FileClassifier.kind(rel, lang == null ? null : lang.name(), binary);
+            String kind = FileClassifier.kind(rel, lang == null ? null : lang.name(), binary, c.lines);
             cells.computeIfAbsent(language, k -> new TreeMap<>()).computeIfAbsent(kind, k -> new Counts()).add(c);
             int slash = rel.indexOf('/');
             byDir.computeIfAbsent(slash < 0 ? "." : rel.substring(0, slash), k -> new Counts()).add(c);
