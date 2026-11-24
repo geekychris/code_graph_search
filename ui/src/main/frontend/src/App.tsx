@@ -10,6 +10,9 @@ import PortfolioView from './components/portfolio/PortfolioView'
 import RepoView, { type RepoTab } from './components/portfolio/RepoView'
 import ConceptsView from './components/portfolio/ConceptsView'
 import AuthMenu from './components/AuthMenu'
+import { useQuery } from '@tanstack/react-query'
+import { getPortfolioOverview } from './api/client'
+import { seedFamilies } from './components/portfolio/palette'
 import type { Element } from './types'
 
 type Tab = 'portfolio' | 'concepts' | 'search' | 'graph' | 'connectivity' | 'repos'
@@ -35,6 +38,9 @@ interface HistoryEntry {
 }
 
 export default function App() {
+  // Family colours must be assigned before any page draws them
+  const overview = useQuery({ queryKey: ['portfolio-overview'], queryFn: getPortfolioOverview, staleTime: 60_000 })
+  if (overview.data) seedFamilies(Object.keys(overview.data.families))
   const [activeTab, setActiveTab] = useState<Tab>('portfolio')
   const [repoId, setRepoId] = useState<string | null>(null)
   const [repoTab, setRepoTab] = useState<RepoTab>('overview')

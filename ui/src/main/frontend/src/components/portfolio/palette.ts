@@ -17,8 +17,13 @@ export function familyColor(family?: string | null): string {
   return FAMILY_COLORS[known[family]]
 }
 
-/** Kept for callers; colours come from a stable hash so every page agrees. */
-export function seedFamilies(_families: string[]) {}
+/**
+ * Gives each family its own colour, in a fixed order. The app seeds this once from the
+ * portfolio overview so every page agrees; unseeded families fall back to a hash.
+ */
+export function seedFamilies(families: string[]) {
+  families.filter((f) => f !== 'unsorted').sort().forEach((f, i) => { known[f] = i % FAMILY_COLORS.length })
+}
 
 export const LANGUAGE_COLORS: Record<string, string> = {
   java: '#f97316', go: '#22d3ee', rust: '#fb7185', typescript: '#3b82f6', javascript: '#facc15',

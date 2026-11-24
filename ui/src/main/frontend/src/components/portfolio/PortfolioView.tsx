@@ -61,10 +61,31 @@ export default function PortfolioView({ onOpenRepo, onOpenConcept }: Props) {
       deps.forEach((e) => els.push({ data: { id: `d:${e.from}>${e.to}`, source: e.from, target: e.to, width: 1.5 } }))
       return { elements: els, layout: { name: 'dagre', rankDir: 'TB', nodeSep: 18, rankSep: 70, animate: false } as any }
     }
-    const fams = new Set(repos.map((r) => r.family || 'unsorted'))
-    fams.forEach((f) => els.push({ data: { id: `fam:${f}`, label: f, color: familyColor(f), family: true } }))
-    repos.forEach((r) => els.push(repoNode(r, true)))
-    deps.forEach((e) => els.push({ data: { id: `d:${e.from}>${e.to}`, source: e.from, target: e.to, width: 1.5 } }))
+    // Families packed onto shelves; each family's repos in a grid, biggest first
+    const byFam = new Map<string, PortfolioRepo[]>()
+    repos.forEach((r) => {
+      const f = r.family || 'unsorted'
+      if (!byFam.has(f)) byFam.set(f, [])
+      byFam.get(f)!.push(r)
+    })
+    const CELL = 92, PAD = 40, GAP = 70, WIDTH = 2600
+    const boxes = [...byFam.entries()].sort((a, b) => b[1].length - a[1].length).map(([f, list]) => {
+      const cols = Math.max(1, Math.ceil(Math.sqrt(list.length * 1.6)))
+      const rows = Math.ceil(list.length / cols)
+      return { f, list: list.sort((a, b) => b.elements - a.elements), cols, w: cols * CELL, h: rows * CELL }
+    })
+    let x = 0, y = 0, rowH = 0
+    boxes.forEach((b) => {
+      if (x > 0 && x + b.w > WIDTH) { x = 0; y += rowH + GAP + PAD; rowH = 0 }
+      els.push({ data: { id: `fam:${b.f}`, label: b.f, color: familyColor(b.f), family: true } })
+      b.list.forEach((r, i) => {
+        const node = repoNode(r, true)
+        els.push({ ...node, position: { x: x + (i % b.cols) * CELL + CELL / 2, y: y + Math.floor(i / b.cols) * CELL + CELL / 2 } })
+      })
+      x += b.w + GAP + PAD
+      rowH = Math.max(rowH, b.h)
+    })
+    deps.forEach((e) => els.push({ data: { id: `d:${e.from}>${e.to}`, source: e.from, target: e.to, width: 1.2 }, classes: 'dep' }))
     if (showRelated) {
       const seen = new Set<string>()
       repos.forEach((r) => r.related.forEach((o) => {
@@ -75,23 +96,19 @@ export default function PortfolioView({ onOpenRepo, onOpenConcept }: Props) {
         els.push({ data: { id: `r:${k}`, source: r.id, target: o, width: 0.6 }, classes: 'related' })
       }))
     }
-    return {
-      elements: els,
-      layout: { name: 'cose-bilkent', animate: false, nodeRepulsion: 6000, idealEdgeLength: 60, nestingFactor: 0.6,
-        gravity: 0.4, gravityCompound: 1.4, tile: true, tilingPaddingVertical: 12, tilingPaddingHorizontal: 12,
-        randomize: true, numIter: 2500 } as any,
-    }
+    return { elements: els, layout: { name: 'preset', fit: true, padding: 30 } as any }
   }, [data, repos, mode, showRelated])
 
   const stylesheet = useMemo(() => [
     ...BASE_STYLE,
     { selector: 'node[?family]', style: {
       'background-color': 'data(color)', 'background-opacity': 0.08, 'border-width': 1, 'border-color': 'data(color)',
-      'border-opacity': 0.5, label: 'data(label)', 'text-valign': 'top', 'text-halign': 'center', 'font-size': 18,
+      'border-opacity': 0.5, label: 'data(label)', 'text-valign': 'top', 'text-halign': 'center', 'font-size': 22,
       'font-weight': 600, color: 'data(color)', 'text-margin-y': -6, shape: 'round-rectangle', padding: 14,
     } },
     { selector: 'node[size]', style: { width: 'data(size)', height: 'data(size)', 'border-width': 2.5, 'border-color': 'data(ring)' } },
     { selector: 'node[?private]', style: { shape: 'round-rectangle' } },
+    { selector: 'edge.dep', style: { 'curve-style': 'unbundled-bezier', 'control-point-distances': [40], 'control-point-weights': [0.5], opacity: 0.45 } },
     { selector: 'edge.related', style: { 'line-style': 'dotted', 'target-arrow-shape': 'none', 'line-color': '#334155' } },
   ] as any, [])
 
@@ -240,7 +257,7 @@ export default function PortfolioView({ onOpenRepo, onOpenConcept }: Props) {
 }
 
 function repoNode(r: PortfolioRepo, withParent: boolean) {
-  const size = 10 + Math.min(46, Math.sqrt(r.elements) / 3)
+  const size = 12 + Math.min(40, Math.sqrt(r.elements) / 4)
   return {
     data: {
       id: r.id, label: r.id, size, color: familyColor(r.family), ring: lifecycleColor(r.lifecycle),
