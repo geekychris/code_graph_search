@@ -116,6 +116,27 @@ class PortfolioServiceTest {
     }
 
     @Test
+    void editingACalleeKeepsCallsIntoItFromUntouchedFiles() throws Exception {
+        write("src/Util.java", "package w; public class Util { public static int helper() { return 1; } }");
+        write("src/Caller.java", "package w; public class Caller { public int use() { return Util.helper(); } }");
+        commit("caller");
+        portfolio.syncAll();
+        awaitIdle();
+        String helperId = idOf("widgets", "helper");
+        assertThat(indexer.getCallers(helperId)).extracting(CodeElement::getName).contains("use");
+
+        // Change only Util.java; Caller.java is not re-parsed
+        write("src/Util.java", "package w; public class Util { public static int helper() { return 2; } public void more() {} }");
+        commit("edit util");
+        listing.set(0, remote("widgets", false, false, Instant.parse("2026-11-03T00:00:00Z")));
+        portfolio.syncAll();
+        awaitIdle();
+
+        assertThat(idOf("widgets", "helper")).isEqualTo(helperId);
+        assertThat(indexer.getCallers(helperId)).extracting(CodeElement::getName).contains("use");
+    }
+
+    @Test
     void visibilityFollowsGitHub() throws Exception {
         portfolio.syncAll();
         awaitIdle();

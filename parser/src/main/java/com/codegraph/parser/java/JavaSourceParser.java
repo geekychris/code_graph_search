@@ -116,6 +116,18 @@ public class JavaSourceParser implements LanguageParser {
             return el;
         }
 
+        /**
+         * Records the target's qualified name and expected type on an edge. The target id
+         * is computed within this repo; a cross-repo resolver uses these to find the
+         * real target when the type lives in another repository.
+         */
+        private CodeEdge target(CodeEdge edge, String targetQName, ElementType targetType) {
+            edge.setMetadata(new java.util.HashMap<>(java.util.Map.of(
+                    CodeEdge.META_TARGET_QNAME, targetQName,
+                    CodeEdge.META_TARGET_TYPE, targetType.name())));
+            return edge;
+        }
+
         private void addContains(String parentId, String childId) {
             result.addEdge(new CodeEdge(parentId, childId, EdgeType.CONTAINS));
         }
@@ -275,13 +287,13 @@ public class JavaSourceParser implements LanguageParser {
                 for (var ext : coid.getExtendedTypes()) {
                     var targetQName = resolveTypeName(ext);
                     var targetId = CodeElement.generateId(repoId, filePath, ElementType.CLASS, targetQName);
-                    result.addEdge(new CodeEdge(el.getId(), targetId,
-                            coid.isInterface() ? EdgeType.EXTENDS : EdgeType.EXTENDS));
+                    result.addEdge(target(new CodeEdge(el.getId(), targetId,
+                            coid.isInterface() ? EdgeType.EXTENDS : EdgeType.EXTENDS), targetQName, ElementType.CLASS));
                 }
                 for (var impl : coid.getImplementedTypes()) {
                     var targetQName = resolveTypeName(impl);
                     var targetId = CodeElement.generateId(repoId, filePath, ElementType.INTERFACE, targetQName);
-                    result.addEdge(new CodeEdge(el.getId(), targetId, EdgeType.IMPLEMENTS));
+                    result.addEdge(target(new CodeEdge(el.getId(), targetId, EdgeType.IMPLEMENTS), targetQName, ElementType.INTERFACE));
                 }
             }
 
@@ -445,14 +457,14 @@ public class JavaSourceParser implements LanguageParser {
                 // — arg-typed signature lives in Signature field).
                 var targetQName = targetClass + "#" + methodName;
                 var targetId = CodeElement.generateId(repoId, filePath, ElementType.METHOD, targetQName);
-                result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.CALLS));
+                result.addEdge(target(new CodeEdge(caller.getId(), targetId, EdgeType.CALLS), targetQName, ElementType.METHOD));
             });
 
             // ObjectCreationExpr → INSTANTIATES
             node.findAll(ObjectCreationExpr.class).forEach(oce -> {
                 var targetQName = resolveTypeName(oce.getType());
                 var targetId = CodeElement.generateId(repoId, filePath, ElementType.CLASS, targetQName);
-                result.addEdge(new CodeEdge(caller.getId(), targetId, EdgeType.INSTANTIATES));
+                result.addEdge(target(new CodeEdge(caller.getId(), targetId, EdgeType.INSTANTIATES), targetQName, ElementType.CLASS));
             });
         }
 
