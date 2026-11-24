@@ -1,3 +1,4 @@
+import type { PortfolioOverview, RepoOverview, Architecture, ConceptEntry, WorkItem, RepoDeps } from '../types/knowledge'
 import type {
   Element,
   Edge,
@@ -12,10 +13,30 @@ import type {
 
 const BASE = '/api'
 
+const TOKEN_KEY = 'codegraph.token'
+
+/** The API token for this browser, if the user signed in. */
+export function getToken(): string | null {
+  try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
+}
+
+export function setToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch { /* storage unavailable: the session stays anonymous */ }
+}
+
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken()
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options?.headers || {}),
+    },
   })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -204,4 +225,47 @@ export function getSimilarity(params: {
 
 export function getStatus(): Promise<unknown> {
   return apiFetch<unknown>('/status')
+}
+
+// ---- Who am I ----
+
+export interface WhoAmI { name: string; seesPrivate: boolean; admin: boolean; authEnabled: boolean }
+
+export function whoAmI(): Promise<WhoAmI> {
+  return apiFetch<WhoAmI>('/whoami')
+}
+
+// ---- Concept layer ----
+
+
+export function getPortfolioOverview(): Promise<PortfolioOverview> {
+  return apiFetch<PortfolioOverview>('/portfolio/overview')
+}
+
+export function getSynthesis(): Promise<Record<string, string>> {
+  return apiFetch<Record<string, string>>('/portfolio/synthesis')
+}
+
+export function getRepoOverview(id: string): Promise<RepoOverview> {
+  return apiFetch<RepoOverview>(`/repos/${encodeURIComponent(id)}/overview`)
+}
+
+export function getArchitecture(id: string, path = ''): Promise<Architecture> {
+  return apiFetch<Architecture>(`/repos/${encodeURIComponent(id)}/architecture${toQueryString({ path })}`)
+}
+
+export function searchConcepts(q = '', kind = '', limit = 200): Promise<ConceptEntry[]> {
+  return apiFetch<ConceptEntry[]>(`/concepts${toQueryString({ q, kind, limit })}`)
+}
+
+export function getConcept(slug: string): Promise<ConceptEntry> {
+  return apiFetch<ConceptEntry>(`/concepts/${encodeURIComponent(slug)}`)
+}
+
+export function getConceptQueue(): Promise<WorkItem[]> {
+  return apiFetch<WorkItem[]>('/concepts/queue')
+}
+
+export function getRepoDeps(id: string): Promise<RepoDeps> {
+  return apiFetch<RepoDeps>(`/deps/repos/${encodeURIComponent(id)}`)
 }

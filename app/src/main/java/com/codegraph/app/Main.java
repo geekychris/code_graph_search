@@ -9,6 +9,7 @@ import com.codegraph.core.security.Principal;
 import com.codegraph.core.security.RequestContext;
 import com.codegraph.core.service.ScopedGraphService;
 import com.codegraph.app.deps.DependencyService;
+import com.codegraph.app.knowledge.KnowledgeServiceImpl;
 import com.codegraph.app.portfolio.GitMirror;
 import com.codegraph.app.portfolio.PortfolioService;
 import com.codegraph.indexer.IndexerService;
@@ -137,6 +138,16 @@ public class Main {
         dependencies.load();
         graphService.addIndexListener(dependencies::onRepoIndexed);
 
+        // Concept layer: repo-atlas cards, session-written concepts, architecture from the graph
+        KnowledgeServiceImpl knowledge = null;
+        if (config.getKnowledge().isEnabled()) {
+            var kc = config.getKnowledge();
+            knowledge = new KnowledgeServiceImpl(graphService, dependencies, kc.getAtlasRepo(),
+                    kc.getAtlasDir() == null ? null : Path.of(kc.getAtlasDir()));
+            knowledge.load();
+            graphService.addIndexListener(knowledge::onRepoIndexed);
+        }
+
         List<RepoConfig> localRepos = new ArrayList<>(config.getRepos());
         localRepos.addAll(persistedLocalRepos(config, graphService));
         if (!localRepos.isEmpty()) {
@@ -166,6 +177,7 @@ public class Main {
         ScopedGraphService scopedGraph = new ScopedGraphService(graphService);
         McpServer mcpServer = new McpServer(scopedGraph, mapper);
         mcpServer.registerDependencyTools(dependencies, scopedGraph::canSeeRepo);
+        if (knowledge != null) mcpServer.registerKnowledgeTools(knowledge, scopedGraph::canSeeRepo);
         mcpServer.registerAllTools();
         mcpServer.setIndexManagement(indexManagement);
 
@@ -186,6 +198,7 @@ public class Main {
         RestServer restServer = new RestServer(scopedGraph, mcpServer, config, mapper);
         restServer.setIndexManagement(indexManagement);
         restServer.setDependencies(dependencies);
+        if (knowledge != null) restServer.setKnowledge(knowledge);
 
         PortfolioService portfolio = null;
         if (config.getPortfolio().isEnabled()) {
@@ -194,6 +207,7 @@ public class Main {
         }
         restServer.start();
         if (portfolio != null) portfolio.start();
+        if (knowledge != null && config.getKnowledge().isWarmUp()) knowledge.warmUp();
 
         // -------------------------------------------------------------------------
         // 10b. Start FileWatcher if autoWatch is enabled

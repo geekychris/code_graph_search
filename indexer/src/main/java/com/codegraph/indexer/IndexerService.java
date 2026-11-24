@@ -634,6 +634,10 @@ public class IndexerService implements GraphService {
     }
 
     /** All stored facts of one kind: repo id → JSON. */
+    public Optional<String> getRepoFact(String repoId, String kind) {
+        return metadata.getFact(repoId, kind);
+    }
+
     public Map<String, String> listRepoFacts(String kind) {
         return metadata.listFacts(kind);
     }

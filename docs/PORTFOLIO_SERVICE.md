@@ -82,6 +82,53 @@ MCP tools: `repo_dependencies`, `repo_dependents`, `dependency_layers` (release
 order and cycles), `drift_report`, `find_artifact_users`, `portfolio_dependency_stats`.
 All of them leave out repos the caller can't see.
 
+## Concepts, architecture and the UI
+
+Three layers sit above the code graph. Each one carries the visibility of its repo.
+
+| Layer | Where it comes from | Kept current by |
+|---|---|---|
+| **Repo cards**: purpose, family, status, maturity, tech, tags, related repos, and the dossier sections | the repo-atlas dossiers (`repos/<name>.md`), read from the `repo-atlas` repo's own mirror | a re-import whenever `repo-atlas` is indexed |
+| **Architecture**: modules, packages or directories, the references between them, calls into other repos, and load-bearing types | the code graph, folded to file level (`filegraph` repo fact), then to any directory level | a rebuild when the repo, or a repo it depends on, is re-indexed |
+| **Concepts**: an overview, a concept drawing (Mermaid) and concepts anchored to code | Claude sessions, through the MCP work queue | sessions re-describe a repo when `concept_work_queue` lists it as changed |
+
+Concepts with the same name in different repos are one concept (`slug`). Repo-atlas tags and
+families also count as concepts, so `search_concepts` finds every repo tagged `zookeeper` even
+before any session has described it.
+
+### How sessions write concepts
+
+The service never calls a model. A Claude session with an admin token does the writing:
+
+1. `concept_work_queue`: repos never described, then repos whose code changed since.
+2. `claim_concept_work {repo}` claims the repo for 30 minutes and returns a bundle:
+   - the card, the architecture, key types, dependencies and the README;
+   - any previous write-up;
+   - instructions.
+3. `submit_concepts {repo, overview, diagram, concepts}` stores the write-up:
+   - Anchors given as qualified names or paths are resolved to element ids.
+   - A diagram that isn't Mermaid is refused.
+   - A public repo's text that names a private repo comes back with a warning so it can be resubmitted.
+
+Read tools: `repo_overview`, `repo_architecture`, `search_concepts` and `get_concept`.
+
+### UI
+
+- **Portfolio** (the home page):
+  - every repo by family, on a map or as cards;
+  - the dependency layers;
+  - the "what already exists for…" concept search.
+- **Repo pages:**
+  - the concept drawing, or a structure drawing derived from the code graph until a session draws one;
+  - an architecture map: double-click to go inside a module, then into a package, then to its files;
+  - concepts, dependencies and the dossier.
+- **Concepts:** one concept across every repo that has it, with its code anchors.
+- **Sign-in:** without a token the UI shows public repos only. The top right takes an API token, kept in the browser's local storage.
+
+REST: `GET /api/portfolio/overview`, `/api/portfolio/synthesis`, `/api/repos/{id}/overview`,
+`/api/repos/{id}/architecture?path=`, `/api/concepts?q=&kind=`, `/api/concepts/{slug}`,
+`/api/concepts/queue`.
+
 ## Endpoints
 
 | Route | What |
