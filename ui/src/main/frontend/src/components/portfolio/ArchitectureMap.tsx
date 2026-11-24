@@ -59,7 +59,7 @@ export default function ArchitectureMap({ repoId, path, onPath, onOpenRepo, onOp
 
   if (isLoading) return <Centered>Reading the structure of {repoId} from the code graph… (the first visit to a big repo can take a few seconds)</Centered>
   if (error || !data) return <Centered>Couldn't build the architecture: {String((error as Error)?.message || '')}</Centered>
-  if (data.groups.length === 0) return <Centered>No parsed code in this repo (only languages with a parser appear here: Java, Go, Rust, TypeScript, JavaScript, C and C++).</Centered>
+  if (data.groups.length === 0) return <Centered>No parsed code in this repo (only languages with a parser appear here: Java, Python, Go, Rust, TypeScript, JavaScript, C and C++).</Centered>
 
   const crumbs = ['', ...data.breadcrumbs]
   const groupById = new Map(data.groups.map((g) => [g.id, g]))
