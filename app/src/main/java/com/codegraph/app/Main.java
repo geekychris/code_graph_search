@@ -4,9 +4,14 @@ import com.codegraph.core.config.AppConfig;
 import com.codegraph.core.config.RepoConfig;
 import com.codegraph.core.model.Language;
 import com.codegraph.core.model.Repository;
+import com.codegraph.core.model.Visibility;
+import com.codegraph.core.security.Principal;
+import com.codegraph.core.security.RequestContext;
+import com.codegraph.core.service.ScopedGraphService;
+import com.codegraph.app.portfolio.GitMirror;
+import com.codegraph.app.portfolio.PortfolioService;
 import com.codegraph.indexer.IndexerService;
 import com.codegraph.mcp.McpServer;
-import com.codegraph.parser.ParseResult;
 import com.codegraph.parser.ParserRegistry;
 import com.codegraph.rest.RestServer;
 import com.codegraph.watcher.FileWatcher;
@@ -17,19 +22,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Application entry point.
@@ -83,6 +84,18 @@ public class Main {
         // -------------------------------------------------------------------------
         AppConfig config = AppConfig.loadOrDefault(configPath);
 
+        // Private GitHub repos must never be served without authentication
+        if (config.getPortfolio().isEnabled() && !mcpStdioMode
+                && !config.getAuth().isEnabled() && !config.getAuth().isAllowInsecure()) {
+            log.error("portfolio.enabled syncs private repositories but auth.enabled is false. "
+                    + "Enable auth (see config-example.yaml) or set auth.allowInsecure: true for a "
+                    + "machine nobody else can reach.");
+            System.exit(1);
+        }
+        // Stdio MCP is a local, trusted process; with auth off the HTTP API is too
+        RequestContext.setDefault(mcpStdioMode || !config.getAuth().isEnabled()
+                ? Principal.LOCAL : Principal.ANONYMOUS);
+
         // -------------------------------------------------------------------------
         // 3. Create data directories
         // -------------------------------------------------------------------------
@@ -118,11 +131,13 @@ public class Main {
         // -------------------------------------------------------------------------
         // 6. Index configured repositories
         // -------------------------------------------------------------------------
-        if (!config.getRepos().isEmpty()) {
-            log.info("Indexing {} configured repository/repositories...", config.getRepos().size());
-            indexRepositories(config, graphService, parserRegistry);
+        List<RepoConfig> localRepos = new ArrayList<>(config.getRepos());
+        localRepos.addAll(persistedLocalRepos(config, graphService));
+        if (!localRepos.isEmpty()) {
+            log.info("Checking {} local repository/repositories...", localRepos.size());
+            indexRepositories(config, localRepos, graphService, parserRegistry);
         } else {
-            log.info("No repositories configured — skipping initial indexing");
+            log.info("No local repositories configured — skipping initial indexing");
         }
 
         // -------------------------------------------------------------------------
@@ -141,7 +156,9 @@ public class Main {
         // 8. Create McpServer and register all tools
         // -------------------------------------------------------------------------
         log.info("Initializing MCP server...");
-        McpServer mcpServer = new McpServer(graphService, mapper);
+        // Everything callers can reach reads through the visibility filter
+        ScopedGraphService scopedGraph = new ScopedGraphService(graphService);
+        McpServer mcpServer = new McpServer(scopedGraph, mapper);
         mcpServer.registerAllTools();
         mcpServer.setIndexManagement(indexManagement);
 
@@ -159,18 +176,27 @@ public class Main {
         // -------------------------------------------------------------------------
         // 10a. Start REST server
         // -------------------------------------------------------------------------
-        RestServer restServer = new RestServer(graphService, mcpServer, config, mapper);
+        RestServer restServer = new RestServer(scopedGraph, mcpServer, config, mapper);
         restServer.setIndexManagement(indexManagement);
+
+        PortfolioService portfolio = null;
+        if (config.getPortfolio().isEnabled()) {
+            portfolio = PortfolioService.fromConfig(config.getPortfolio(), graphService, parserRegistry);
+            restServer.setPortfolio(portfolio);
+        }
         restServer.start();
+        if (portfolio != null) portfolio.start();
 
         // -------------------------------------------------------------------------
         // 10b. Start FileWatcher if autoWatch is enabled
         // -------------------------------------------------------------------------
         FileWatcher fileWatcher = null;
-        if (config.getIndexer().isAutoWatch() && !config.getRepos().isEmpty()) {
+        List<RepoConfig> runtimeRepos = persistedLocalRepos(config, graphService);
+        if (config.getIndexer().isAutoWatch() && (!config.getRepos().isEmpty() || !runtimeRepos.isEmpty())) {
             log.info("Starting file watcher (autoWatch=true)...");
             fileWatcher = new FileWatcher(config, graphService, parserRegistry);
             fileWatcher.startWatching();
+            runtimeRepos.forEach(fileWatcher::addRepo);
             indexManagement.setFileWatcher(fileWatcher);
         }
 
@@ -191,6 +217,10 @@ public class Main {
         // 10d. Shutdown hook
         // -------------------------------------------------------------------------
         final FileWatcher finalFileWatcher = fileWatcher;
+        final PortfolioService finalPortfolio = portfolio;
+        if (finalPortfolio != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(finalPortfolio::stop, "portfolio-stop"));
+        }
         registerShutdownHook(graphService, restServer, finalFileWatcher);
 
         // Keep the main thread alive (Javalin uses its own server threads)
@@ -202,10 +232,36 @@ public class Main {
     // -------------------------------------------------------------------------
 
     /**
-     * For each repo in config: creates/saves a Repository record, then runs
-     * full indexing in parallel across all repos.
+     * Repos added at runtime through the API or MCP ({@code source = local}) and not in
+     * the config file. They are kept in the registry so they survive restarts.
      */
-    private static void indexRepositories(AppConfig config,
+    static List<RepoConfig> persistedLocalRepos(AppConfig config, IndexerService graphService) {
+        Set<String> configured = new HashSet<>();
+        config.getRepos().forEach(r -> configured.add(r.getId()));
+        List<RepoConfig> result = new ArrayList<>();
+        for (Repository r : graphService.listRepositories()) {
+            if (!"local".equals(r.getSource()) || configured.contains(r.getId()) || r.getRootPath() == null) continue;
+            RepoConfig rc = new RepoConfig();
+            rc.setId(r.getId());
+            rc.setName(r.getName());
+            rc.setPath(r.getRootPath());
+            rc.setVisibility(r.getVisibility());
+            rc.setDescription(r.getDescription());
+            if (r.getLanguages() != null) rc.setLanguages(r.getLanguages());
+            result.add(rc);
+        }
+        return result;
+    }
+
+    /**
+     * Brings each local repo's index up to date, in parallel.
+     *
+     * <p>A repo that has never been indexed (or failed) gets a full index. A repo that is a
+     * git checkout is caught up with the commits and uncommitted edits made while the
+     * server was down. Other repos already indexed are left as they are; the file watcher
+     * keeps them current while running.
+     */
+    private static void indexRepositories(AppConfig config, List<RepoConfig> repos,
                                           IndexerService graphService,
                                           ParserRegistry parserRegistry) {
         int threads = Math.max(1, config.getIndexer().getIndexingThreads());
@@ -214,53 +270,19 @@ public class Main {
             t.setDaemon(true);
             return t;
         });
+        GitMirror git = new GitMirror(Path.of(config.getIndexer().getDataDir()), null, 120);
 
-        List<Runnable> indexingTasks = new ArrayList<>();
-
-        for (RepoConfig repoConfig : config.getRepos()) {
-            if (repoConfig.getId() == null || repoConfig.getPath() == null) {
-                log.warn("Skipping repo config with null id or path");
-                continue;
-            }
-
-            // Create or update Repository record
-            Repository repo = graphService.getRepository(repoConfig.getId())
-                    .orElseGet(Repository::new);
-            repo.setId(repoConfig.getId());
-            repo.setName(repoConfig.getName() != null ? repoConfig.getName() : repoConfig.getId());
-            repo.setRootPath(repoConfig.getPath());
-            if (repoConfig.getLanguages() != null && !repoConfig.getLanguages().isEmpty()) {
-                repo.setLanguages(repoConfig.getLanguages());
-            }
-            if (repoConfig.getDescription() != null) {
-                repo.setDescription(repoConfig.getDescription());
-            }
-
-            // Decide whether to skip re-indexing (already READY status with data)
-            boolean needsIndexing = repo.getStatus() != Repository.IndexingStatus.READY
-                    || repo.getElementCount() == 0;
-
-            if (!needsIndexing) {
-                log.info("Repo '{}' is already indexed ({} elements), skipping",
-                        repo.getId(), repo.getElementCount());
-                graphService.saveRepository(repo);
-                continue;
-            }
-
-            repo.setStatus(Repository.IndexingStatus.PENDING);
-            graphService.saveRepository(repo);
-
-            final Repository finalRepo = repo;
-            indexingTasks.add(() -> indexRepo(repoConfig, finalRepo, graphService, parserRegistry));
-        }
-
-        if (indexingTasks.isEmpty()) return;
-
-        CountDownLatch latch = new CountDownLatch(indexingTasks.size());
-        for (Runnable task : indexingTasks) {
+        CountDownLatch latch = new CountDownLatch(repos.size());
+        for (RepoConfig repoConfig : repos) {
             repoExecutor.submit(() -> {
                 try {
-                    task.run();
+                    if (repoConfig.getId() == null || repoConfig.getPath() == null) {
+                        log.warn("Skipping repo config with null id or path");
+                        return;
+                    }
+                    catchUpRepo(repoConfig, graphService, parserRegistry, git);
+                } catch (Exception e) {
+                    log.error("Indexing repo '{}' failed: {}", repoConfig.getId(), e.getMessage(), e);
                 } finally {
                     latch.countDown();
                 }
@@ -268,178 +290,76 @@ public class Main {
         }
 
         try {
-            // Wait for all repos to finish indexing
             latch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while waiting for indexing to complete");
         }
-
         repoExecutor.shutdown();
     }
 
-    /**
-     * Indexes a single repository by walking the directory tree and parsing each file.
-     */
-    private static void indexRepo(RepoConfig repoConfig,
-                                  Repository repo,
-                                  IndexerService graphService,
-                                  ParserRegistry parserRegistry) {
-        String repoId = repoConfig.getId();
-        Path root = Path.of(repoConfig.getPath()).toAbsolutePath().normalize();
+    private static void catchUpRepo(RepoConfig repoConfig, IndexerService graphService,
+                                    ParserRegistry parserRegistry, GitMirror git) {
+        Repository repo = graphService.getRepository(repoConfig.getId()).orElseGet(Repository::new);
+        repo.setId(repoConfig.getId());
+        repo.setName(repoConfig.getName() != null ? repoConfig.getName() : repoConfig.getId());
+        repo.setRootPath(repoConfig.getPath());
+        if (repoConfig.getLanguages() != null && !repoConfig.getLanguages().isEmpty()) {
+            repo.setLanguages(repoConfig.getLanguages());
+        }
+        if (repoConfig.getDescription() != null) repo.setDescription(repoConfig.getDescription());
+        if (repoConfig.getVisibility() != null) repo.setVisibility(repoConfig.getVisibility());
+        else if (repo.getVisibility() == null) repo.setVisibility(Visibility.PRIVATE);
+        if (repo.getSource() == null) repo.setSource("config");
+        graphService.saveRepository(repo);
 
+        Path root = Path.of(repoConfig.getPath()).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
-            log.error("Repo '{}' path does not exist or is not a directory: {}", repoId, root);
+            log.error("Repo '{}' path does not exist or is not a directory: {}", repo.getId(), root);
             repo.setStatus(Repository.IndexingStatus.ERROR);
             graphService.saveRepository(repo);
             return;
         }
 
-        log.info("Indexing repo '{}' at {}", repoId, root);
-        repo.setStatus(Repository.IndexingStatus.INDEXING);
-        graphService.saveRepository(repo);
+        boolean isGit = git.isGitRepo(root);
+        String head = isGit ? git.head(root) : null;
+        boolean fresh = repo.getStatus() != Repository.IndexingStatus.READY
+                && repo.getStatus() != Repository.IndexingStatus.WATCHING
+                || repo.getElementCount() == 0;
 
-        AtomicInteger fileCount    = new AtomicInteger(0);
-        AtomicInteger elementCount = new AtomicInteger(0);
-        AtomicInteger errorCount   = new AtomicInteger(0);
-
-        try {
-            // Use a thread pool per repo for parallel file parsing
-            int threads = Math.max(1, Runtime.getRuntime().availableProcessors());
-            ExecutorService fileExecutor = Executors.newFixedThreadPool(threads, r -> {
-                Thread t = Thread.ofVirtual().unstarted(r);
-                t.setDaemon(true);
-                return t;
-            });
-
-            List<Path> filesToParse = new ArrayList<>();
-
-            // Walk the tree, collect files that aren't excluded
-            Files.walkFileTree(root, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    if (isExcluded(dir, root, repoConfig)) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (!isExcluded(file, root, repoConfig)) {
-                        filesToParse.add(file);
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    log.warn("Cannot visit {}: {}", file, exc.getMessage());
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-
-            log.info("Repo '{}': found {} files to parse", repoId, filesToParse.size());
-
-            CountDownLatch fileLatch = new CountDownLatch(filesToParse.size());
-            for (Path file : filesToParse) {
-                fileExecutor.submit(() -> {
-                    try {
-                        ParseResult result = parserRegistry.parse(file, repoId, root);
-                        fileCount.incrementAndGet();
-                        if (result.isSuccess()) {
-                            if (!result.getElements().isEmpty()) {
-                                graphService.saveElements(result.getElements());
-                                elementCount.addAndGet(result.getElements().size());
-                            }
-                            if (!result.getEdges().isEmpty()) {
-                                graphService.saveEdges(result.getEdges());
-                            }
-                        } else {
-                            errorCount.incrementAndGet();
-                        }
-                    } catch (Exception e) {
-                        log.error("Error parsing {}: {}", file, e.getMessage(), e);
-                        errorCount.incrementAndGet();
-                    } finally {
-                        fileLatch.countDown();
-                    }
-                });
-            }
-
-            fileLatch.await();
-            fileExecutor.shutdown();
-
-            // Update repo with final stats
-            repo.setStatus(Repository.IndexingStatus.READY);
-            repo.setLastIndexed(Instant.now());
-            repo.setFileCount(fileCount.get());
-            repo.setElementCount(elementCount.get());
-            graphService.saveRepository(repo);
-
-            log.info("Repo '{}' indexed: {} files, {} elements, {} parse errors",
-                    repoId, fileCount.get(), elementCount.get(), errorCount.get());
-
-        } catch (IOException e) {
-            log.error("IO error walking repo '{}': {}", repoId, e.getMessage(), e);
-            repo.setStatus(Repository.IndexingStatus.ERROR);
-            graphService.saveRepository(repo);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Interrupted while indexing repo '{}'", repoId);
-            repo.setStatus(Repository.IndexingStatus.ERROR);
-            graphService.saveRepository(repo);
-        }
-    }
-
-    /**
-     * Returns {@code true} if the path should be excluded based on the repo's
-     * exclude patterns (simple glob matching).
-     */
-    private static boolean isExcluded(Path path, Path repoRoot, RepoConfig repoConfig) {
-        if (repoConfig.getExcludePatterns() == null || repoConfig.getExcludePatterns().isEmpty()) {
-            return false;
-        }
-        String relativePath = repoRoot.relativize(path).toString().replace('\\', '/');
-        String absolutePath = path.toString().replace('\\', '/');
-
-        for (String pattern : repoConfig.getExcludePatterns()) {
-            if (matchesGlob(relativePath, pattern) || matchesGlob(absolutePath, pattern)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Minimal glob matching: supports {@code *}, {@code **}, and {@code ?}.
-     */
-    private static boolean matchesGlob(String path, String pattern) {
-        // Convert glob to regex
-        StringBuilder regex = new StringBuilder("^");
-        int i = 0;
-        while (i < pattern.length()) {
-            char c = pattern.charAt(i);
-            if (c == '*' && i + 1 < pattern.length() && pattern.charAt(i + 1) == '*') {
-                regex.append(".*");
-                i += 2;
-                if (i < pattern.length() && (pattern.charAt(i) == '/' || pattern.charAt(i) == '\\')) i++;
-            } else if (c == '*') {
-                regex.append("[^/\\\\]*");
-                i++;
-            } else if (c == '?') {
-                regex.append("[^/\\\\]");
-                i++;
+        if (fresh) {
+            graphService.indexRepository(repoConfig, parserRegistry);
+        } else if (isGit) {
+            GitMirror.ChangeSet committed = (repo.getIndexedCommit() != null && head != null
+                    && !head.equals(repo.getIndexedCommit()))
+                    ? git.diff(root, repo.getIndexedCommit(), head)
+                    : new GitMirror.ChangeSet(List.of(), List.of());
+            if (committed == null) {
+                log.info("Repo '{}': indexed commit not found, re-indexing fully", repo.getId());
+                graphService.indexRepository(repoConfig, parserRegistry);
             } else {
-                regex.append(java.util.regex.Pattern.quote(String.valueOf(c)));
-                i++;
+                GitMirror.ChangeSet local = git.workingTreeChanges(root);
+                Set<String> changed = new java.util.LinkedHashSet<>(committed.changed());
+                changed.addAll(local.changed());
+                Set<String> deleted = new java.util.LinkedHashSet<>(committed.deleted());
+                deleted.addAll(local.deleted());
+                deleted.removeAll(changed);
+                if (changed.isEmpty() && deleted.isEmpty()) {
+                    log.info("Repo '{}' is up to date ({} elements)", repo.getId(), repo.getElementCount());
+                } else {
+                    graphService.indexRepositoryChanges(repoConfig, changed, deleted, parserRegistry);
+                }
             }
+        } else {
+            log.info("Repo '{}' is already indexed ({} elements); not a git checkout, so offline "
+                    + "changes are not detected. Reindex it to refresh.", repo.getId(), repo.getElementCount());
         }
-        regex.append("$");
-        try {
-            return path.matches(regex.toString());
-        } catch (Exception e) {
-            return false;
+
+        if (head != null) {
+            graphService.getRepository(repo.getId()).ifPresent(latest -> {
+                latest.setIndexedCommit(head);
+                graphService.saveRepository(latest);
+            });
         }
     }
 

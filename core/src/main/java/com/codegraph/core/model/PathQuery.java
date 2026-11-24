@@ -1,6 +1,9 @@
 package com.codegraph.core.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.util.List;
+import java.util.function.Predicate;
 
 public class PathQuery {
     private String fromId;
@@ -9,6 +12,13 @@ public class PathQuery {
     private EdgeDirection direction = EdgeDirection.BOTH;
     private List<EdgeType> edgeTypes;  // null = all
     private int maxPaths = 50;
+
+    /**
+     * Optional node filter applied during traversal: paths never pass through a node
+     * it rejects. Set by the visibility layer, never by clients.
+     */
+    @JsonIgnore
+    private transient Predicate<String> nodeFilter;
 
     public PathQuery() {}
 
@@ -29,4 +39,9 @@ public class PathQuery {
     public void setEdgeTypes(List<EdgeType> edgeTypes) { this.edgeTypes = edgeTypes; }
     public int getMaxPaths() { return maxPaths; }
     public void setMaxPaths(int maxPaths) { this.maxPaths = Math.min(maxPaths, 200); }
+
+    @JsonIgnore
+    public Predicate<String> getNodeFilter() { return nodeFilter; }
+    @JsonIgnore
+    public void setNodeFilter(Predicate<String> nodeFilter) { this.nodeFilter = nodeFilter; }
 }

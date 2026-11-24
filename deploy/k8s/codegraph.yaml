@@ -1,0 +1,97 @@
+# Code Graph Search as a portfolio service on Kubernetes.
+#
+# Create the secret first (values are examples):
+#   kubectl -n codegraph create secret generic codegraph-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_... \
+#     --from-literal=CODEGRAPH_ADMIN_TOKEN=$(openssl rand -hex 32) \
+#     --from-literal=CODEGRAPH_READER_TOKEN=$(openssl rand -hex 32) \
+#     --from-literal=CODEGRAPH_PUBLIC_TOKEN=$(openssl rand -hex 32) \
+#     --from-literal=CODEGRAPH_WEBHOOK_SECRET=$(openssl rand -hex 32)
+#
+# One replica only: RocksDB and Lucene hold exclusive locks on the data volume,
+# hence strategy Recreate.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codegraph
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: codegraph-data
+  namespace: codegraph
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Gi   # git mirrors (~30 GB for ~320 repos) plus RocksDB and Lucene
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codegraph
+  namespace: codegraph
+  labels:
+    app: codegraph
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: codegraph
+  template:
+    metadata:
+      labels:
+        app: codegraph
+    spec:
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: codegraph
+          image: ghcr.io/geekychris/code-graph-search:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: codegraph-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 6Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: codegraph-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codegraph
+  namespace: codegraph
+spec:
+  type: NodePort       # node port assigned by Kubernetes; register it with cloud-stack
+  selector:
+    app: codegraph
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

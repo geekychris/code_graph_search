@@ -1,5 +1,6 @@
 package com.codegraph.core.config;
 
+import com.codegraph.core.model.Visibility;
 import com.codegraph.core.model.Language;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
@@ -21,6 +22,7 @@ public class RepoConfig {
     private ClassFilesConfig classFiles = new ClassFilesConfig();
     private List<CrossRepoLink> crossRepoLinks = new ArrayList<>();
     private String description;
+    private Visibility visibility;   // unset = private (fails closed)
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ClassFilesConfig {
@@ -72,4 +74,6 @@ public class RepoConfig {
     public void setCrossRepoLinks(List<CrossRepoLink> crossRepoLinks) { this.crossRepoLinks = crossRepoLinks; }
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
+    public Visibility getVisibility() { return visibility; }
+    public void setVisibility(Visibility visibility) { this.visibility = visibility; }
 }

@@ -1,5 +1,6 @@
 package com.codegraph.core.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -19,6 +20,16 @@ public class Repository {
     private int elementCount;
     private int fileCount;
     private String description;
+
+    // Portfolio fields: where the repo comes from and who may see it
+    private Visibility visibility;
+    private String source;          // "config", "local" (added at runtime) or "github"
+    private String gitUrl;
+    private String htmlUrl;
+    private String defaultBranch;
+    private String indexedCommit;   // commit SHA the index reflects, for git-backed repos
+    private Instant pushedAt;
+    private boolean archived;
 
     public enum IndexingStatus {
         PENDING, INDEXING, READY, ERROR, WATCHING
@@ -53,4 +64,33 @@ public class Repository {
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
+
+    /** GitHub visibility. {@code null} means unknown and is treated as {@link Visibility#PRIVATE}. */
+    public Visibility getVisibility() { return visibility; }
+    public void setVisibility(Visibility visibility) { this.visibility = visibility; }
+
+    /** True only when the repo is known to be public; unknown visibility fails closed. */
+    @JsonIgnore
+    public boolean isPublic() { return visibility == Visibility.PUBLIC; }
+
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+
+    public String getGitUrl() { return gitUrl; }
+    public void setGitUrl(String gitUrl) { this.gitUrl = gitUrl; }
+
+    public String getHtmlUrl() { return htmlUrl; }
+    public void setHtmlUrl(String htmlUrl) { this.htmlUrl = htmlUrl; }
+
+    public String getDefaultBranch() { return defaultBranch; }
+    public void setDefaultBranch(String defaultBranch) { this.defaultBranch = defaultBranch; }
+
+    public String getIndexedCommit() { return indexedCommit; }
+    public void setIndexedCommit(String indexedCommit) { this.indexedCommit = indexedCommit; }
+
+    public Instant getPushedAt() { return pushedAt; }
+    public void setPushedAt(Instant pushedAt) { this.pushedAt = pushedAt; }
+
+    public boolean isArchived() { return archived; }
+    public void setArchived(boolean archived) { this.archived = archived; }
 }

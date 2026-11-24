@@ -32,3 +32,38 @@ treeSitter:
   binaryPath: tree-sitter
   enabled: true
   timeoutSeconds: 30
+
+# --- Serving to other people or agents -------------------------------------
+# With auth disabled every caller is a trusted local user (fine on a laptop).
+# Turn it on before the server is reachable by anyone else.
+auth:
+  enabled: false
+  anonymous: public        # "public": callers without a token see public repos; "deny": refuse them
+  tokens:
+    # Give the SHA-256 of the token (echo -n "$TOKEN" | shasum -a 256) ...
+    - name: chris-laptop
+      sha256: "<hex digest>"
+      scope: all           # "all" = public + private repos, "public" = public only
+      admin: true          # may add/remove/reindex repos and trigger syncs
+    # ... or the name of an environment variable holding the token itself
+    - name: cloud-stack
+      tokenEnv: CODEGRAPH_READER_TOKEN
+      scope: all
+
+# --- Index every repository a GitHub account owns ---------------------------
+# Lists the owners' repos, clones them under mirrorDir, indexes them, and keeps
+# them current (every syncIntervalMinutes and on GitHub push webhooks sent to
+# POST /api/hooks/github). Requires auth.enabled (private repos are included
+# when the token can see them).
+portfolio:
+  enabled: false
+  owners: [geekychris]
+  includeForks: false
+  includeArchived: true
+  # include: [code_graph_search]   # optional allowlist
+  # exclude: [some-huge-repo]
+  mirrorDir: ./data/mirrors
+  syncIntervalMinutes: 30
+  concurrency: 2
+  githubTokenEnv: GITHUB_TOKEN               # fine-grained token: Contents + Metadata read
+  webhookSecretEnv: CODEGRAPH_WEBHOOK_SECRET

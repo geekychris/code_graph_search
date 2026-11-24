@@ -408,7 +408,8 @@ class McpServerTest extends BaseIntegrationTest {
     @Order(71)
     void searchWithNoResultsReturnsEmptyGracefully() throws Exception {
         ObjectNode args = mapper.createObjectNode();
-        args.put("query", "xyznonexistentquerythatshouldmatchnothing12345");
+        // Built at runtime: this test file is part of the indexed corpus, so a literal would match itself
+        args.put("query", "xyznonexistent" + "querythatshouldmatchnothing" + 12345);
         var result = callTool("search_code", args);
         String text = result.path("content").get(0).path("text").asText();
         assertThat(text).isNotNull();

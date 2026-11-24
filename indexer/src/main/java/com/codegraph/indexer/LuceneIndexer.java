@@ -40,6 +40,7 @@ public class LuceneIndexer implements AutoCloseable {
     static final String F_QUALIFIED_NAME = "qualified_name";
     static final String F_QN_EXACT       = "qualified_name_exact";
     static final String F_FILE_PATH      = "file_path";
+    static final String F_FILE_PATH_RAW  = "file_path_raw";
     static final String F_LINE_START     = "line_start";
     static final String F_LINE_END       = "line_end";
     static final String F_SNIPPET        = "snippet";
@@ -96,7 +97,8 @@ public class LuceneIndexer implements AutoCloseable {
         try {
             BooleanQuery.Builder q = new BooleanQuery.Builder();
             q.add(new TermQuery(new Term(F_REPO_ID, repoId)), BooleanClause.Occur.MUST);
-            q.add(new TermQuery(new Term(F_FILE_PATH, filePath)), BooleanClause.Occur.MUST);
+            // file_path is indexed lowercased (see toDocument)
+            q.add(new TermQuery(new Term(F_FILE_PATH, filePath.toLowerCase())), BooleanClause.Occur.MUST);
             writer.deleteDocuments(q.build());
             writesSinceCommit.incrementAndGet();
         } catch (IOException e) {
@@ -207,12 +209,10 @@ public class LuceneIndexer implements AutoCloseable {
             if (repoIds.size() == 1) {
                 builder.add(new TermQuery(new Term(F_REPO_ID, repoIds.get(0))), BooleanClause.Occur.MUST);
             } else {
-                BooleanQuery.Builder repoBuilder = new BooleanQuery.Builder();
-                for (String rid : repoIds) {
-                    repoBuilder.add(new TermQuery(new Term(F_REPO_ID, rid)), BooleanClause.Occur.SHOULD);
-                }
-                repoBuilder.setMinimumNumberShouldMatch(1);
-                builder.add(repoBuilder.build(), BooleanClause.Occur.MUST);
+                // TermInSetQuery has no clause limit; visibility scoping can pass hundreds of repos
+                List<org.apache.lucene.util.BytesRef> terms = repoIds.stream()
+                        .map(org.apache.lucene.util.BytesRef::new).toList();
+                builder.add(new TermInSetQuery(F_REPO_ID, terms), BooleanClause.Occur.FILTER);
             }
             hasFilters = true;
         }
@@ -332,9 +332,11 @@ public class LuceneIndexer implements AutoCloseable {
         }
 
         if (el.getFilePath() != null) {
+            // Lowercased for case-insensitive filtering; the original is stored separately
             String fpLower = el.getFilePath().toLowerCase();
             doc.add(new StringField(F_FILE_PATH, fpLower, Field.Store.YES));
             doc.add(new SortedDocValuesField(F_FILE_PATH, new BytesRef(fpLower)));
+            doc.add(new StoredField(F_FILE_PATH_RAW, el.getFilePath()));
         }
 
         doc.add(new IntPoint(F_LINE_START, el.getLineStart()));
@@ -392,7 +394,8 @@ public class LuceneIndexer implements AutoCloseable {
         el.setSignature(doc.get(F_SIGNATURE));
 
         // file path stored lowercased - restore as-is (parser should have stored original)
-        el.setFilePath(doc.get(F_FILE_PATH));
+        String rawPath = doc.get(F_FILE_PATH_RAW);
+        el.setFilePath(rawPath != null ? rawPath : doc.get(F_FILE_PATH));
 
         IndexableField lineStart = doc.getField(F_LINE_START);
         if (lineStart != null) el.setLineStart(lineStart.numericValue().intValue());
