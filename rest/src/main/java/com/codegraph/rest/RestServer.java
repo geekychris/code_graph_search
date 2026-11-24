@@ -42,6 +42,7 @@ public class RestServer {
     private final ObjectMapper mapper;
     private IndexManagementService indexManagement;
     private PortfolioControl portfolio;
+    private java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies;
     private final ApiAuth auth;
 
     private Javalin app;
@@ -60,6 +61,15 @@ public class RestServer {
 
     public void setPortfolio(PortfolioControl portfolio) {
         this.portfolio = portfolio;
+    }
+
+    public void setDependencies(java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies) {
+        this.dependencies = dependencies;
+    }
+
+    /** Whether the current caller may see a repo. */
+    private boolean visibleRepo(String repoId) {
+        return !(graphService instanceof ScopedGraphService scoped) || scoped.canSeeRepo(repoId);
     }
 
     /** The service without visibility filtering, for indexing work. */
@@ -215,6 +225,13 @@ public class RestServer {
         app.post("/api/portfolio/repos/{id}/refresh",  this::handlePortfolioRefresh);
         app.post("/api/hooks/github",                  this::handleGitHubWebhook);
 
+        // ---- Dependencies across repos ----
+        app.get("/api/deps/repos/{id}", this::handleDepsRepo);
+        app.get("/api/deps/edges",      this::handleDepsEdges);
+        app.get("/api/deps/layers",     this::handleDepsLayers);
+        app.get("/api/deps/drift",      this::handleDepsDrift);
+        app.get("/api/deps/artifacts",  this::handleDepsArtifact);
+
         // ---- System ----
         app.get("/api/status", this::handleStatus);
         app.get("/api/health", ctx -> jsonOk(ctx, Map.of("status", "ok")));
@@ -309,6 +326,73 @@ public class RestServer {
             return;
         }
         jsonOk(ctx, Map.of("result", portfolio.handleWebhook(ctx.header("X-GitHub-Event"), body)));
+    }
+
+    // -------------------------------------------------------------------------
+    // Dependency handlers
+    // -------------------------------------------------------------------------
+
+    private com.codegraph.deps.graph.DependencyGraph depsOrFail(Context ctx) {
+        if (dependencies == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Dependency analysis is not enabled");
+            return null;
+        }
+        return dependencies.get();
+    }
+
+    private void handleDepsRepo(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String id = ctx.pathParam("id");
+        if (!visibleRepo(id) || !g.repos().contains(id)) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "No dependency information for repository: " + id);
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("repo", id);
+        out.put("produces", g.producedBy(id));
+        out.put("dependencies", g.dependenciesOf(id, this::visibleRepo));
+        out.put("dependents", g.dependentsOf(id, this::visibleRepo));
+        out.put("transitiveDependencies", g.closure(id, -1, false, false, this::visibleRepo));
+        out.put("external", g.externalDependencies(id));
+        out.put("modules", g.manifests(id).modules());
+        out.put("warnings", g.manifests(id).warnings());
+        jsonOk(ctx, out);
+    }
+
+    private void handleDepsEdges(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g != null) jsonOk(ctx, g.edges(this::visibleRepo));
+    }
+
+    private void handleDepsLayers(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String prefix = Optional.ofNullable(ctx.queryParam("prefix")).orElse("");
+        jsonOk(ctx, g.layers(this::visibleRepo, r -> r.startsWith(prefix)));
+    }
+
+    private void handleDepsDrift(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g != null) jsonOk(ctx, g.drift(this::visibleRepo));
+    }
+
+    private void handleDepsArtifact(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String key = ctx.queryParam("key");
+        if (key == null || key.isBlank()) {
+            ctx.status(HttpStatus.BAD_REQUEST);
+            jsonError(ctx, "'key' is required, e.g. maven:com.hitorro:hitorro-core");
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("artifact", key);
+        out.put("producers", g.producersOf(key, this::visibleRepo));
+        out.put("users", g.usersOf(key, this::visibleRepo));
+        jsonOk(ctx, out);
     }
 
     // -------------------------------------------------------------------------

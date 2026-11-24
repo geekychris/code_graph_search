@@ -8,6 +8,7 @@ import com.codegraph.core.model.Visibility;
 import com.codegraph.core.security.Principal;
 import com.codegraph.core.security.RequestContext;
 import com.codegraph.core.service.ScopedGraphService;
+import com.codegraph.app.deps.DependencyService;
 import com.codegraph.app.portfolio.GitMirror;
 import com.codegraph.app.portfolio.PortfolioService;
 import com.codegraph.indexer.IndexerService;
@@ -131,6 +132,11 @@ public class Main {
         // -------------------------------------------------------------------------
         // 6. Index configured repositories
         // -------------------------------------------------------------------------
+        // Cross-repo dependencies: rescanned after every index of a repo
+        DependencyService dependencies = new DependencyService(graphService);
+        dependencies.load();
+        graphService.addIndexListener(dependencies::onRepoIndexed);
+
         List<RepoConfig> localRepos = new ArrayList<>(config.getRepos());
         localRepos.addAll(persistedLocalRepos(config, graphService));
         if (!localRepos.isEmpty()) {
@@ -159,6 +165,7 @@ public class Main {
         // Everything callers can reach reads through the visibility filter
         ScopedGraphService scopedGraph = new ScopedGraphService(graphService);
         McpServer mcpServer = new McpServer(scopedGraph, mapper);
+        mcpServer.registerDependencyTools(dependencies, scopedGraph::canSeeRepo);
         mcpServer.registerAllTools();
         mcpServer.setIndexManagement(indexManagement);
 
@@ -178,6 +185,7 @@ public class Main {
         // -------------------------------------------------------------------------
         RestServer restServer = new RestServer(scopedGraph, mcpServer, config, mapper);
         restServer.setIndexManagement(indexManagement);
+        restServer.setDependencies(dependencies);
 
         PortfolioService portfolio = null;
         if (config.getPortfolio().isEnabled()) {

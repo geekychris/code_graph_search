@@ -12,6 +12,7 @@
 
     <modules>
         <module>core</module>
+        <module>deps</module>
         <module>parser</module>
         <module>indexer</module>
         <module>watcher</module>
@@ -49,6 +50,11 @@
             <dependency>
                 <groupId>com.codegraph</groupId>
                 <artifactId>core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.codegraph</groupId>
+                <artifactId>deps</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

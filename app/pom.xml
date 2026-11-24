@@ -20,6 +20,10 @@
         </dependency>
         <dependency>
             <groupId>com.codegraph</groupId>
+            <artifactId>deps</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.codegraph</groupId>
             <artifactId>parser</artifactId>
         </dependency>
         <dependency>

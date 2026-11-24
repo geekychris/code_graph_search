@@ -33,6 +33,7 @@ public class IndexerService implements GraphService {
     private final MetadataStore metadata;
     private final ExecutorService executor;
     private long maxFileBytes = 1_000_000;
+    private final List<java.util.function.Consumer<String>> indexListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     // -------------------------------------------------------------------------
     // Construction
@@ -619,6 +620,24 @@ public class IndexerService implements GraphService {
         return repo;
     }
 
+    /**
+     * Registers a callback run (on the indexing thread) after each full or incremental
+     * index of a repo, with the repo id. Used for derived data such as dependencies.
+     */
+    public void addIndexListener(java.util.function.Consumer<String> listener) {
+        indexListeners.add(listener);
+    }
+
+    /** Stores derived data for a repo (JSON), keyed by kind. Deleted with the repo. */
+    public void saveRepoFact(String repoId, String kind, String commit, String json) {
+        metadata.putFact(repoId, kind, commit, json);
+    }
+
+    /** All stored facts of one kind: repo id → JSON. */
+    public Map<String, String> listRepoFacts(String kind) {
+        return metadata.listFacts(kind);
+    }
+
     private void finishIndexing(Repository repo, IndexStats stats, boolean full) {
         // Re-read so fields set elsewhere during indexing (e.g. by sync) are kept
         Repository latest = getRepository(repo.getId()).orElse(repo);
@@ -631,6 +650,13 @@ public class IndexerService implements GraphService {
             latest.setElementCount((int) lucene.count(repoOnly(repo.getId())));
         }
         saveRepository(latest);
+        for (var listener : indexListeners) {
+            try {
+                listener.accept(repo.getId());
+            } catch (Exception e) {
+                log.error("Index listener failed for {}: {}", repo.getId(), e.getMessage(), e);
+            }
+        }
         if (full) {
             log.info("Repo '{}' indexed: {} files, {} elements, {} parse errors, {} removed",
                     repo.getId(), stats.files(), stats.elements(), stats.errors(), stats.deleted());

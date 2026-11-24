@@ -131,6 +131,22 @@ public class McpServer {
         log.info("Registered {} MCP tools", registry.size());
     }
 
+    /**
+     * Adds the portfolio dependency tools. {@code visible} decides, per request, which
+     * repos the caller may see.
+     */
+    public void registerDependencyTools(java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> graph,
+                                        java.util.function.Predicate<String> visible) {
+        var ctx = new DependencyTools.Context(graph, visible);
+        registry.register(new DependencyTools.RepoDependencies(ctx));
+        registry.register(new DependencyTools.RepoDependents(ctx));
+        registry.register(new DependencyTools.DependencyLayers(ctx));
+        registry.register(new DependencyTools.DriftReport(ctx));
+        registry.register(new DependencyTools.FindArtifactUsers(ctx));
+        registry.register(new DependencyTools.DependencyStats(ctx));
+        log.info("Registered dependency MCP tools (total: {})", registry.size());
+    }
+
     /** Tools that change what is indexed or watched; callers need {@link com.codegraph.core.security.Principal#admin()}. */
     static final Set<String> ADMIN_TOOLS = Set.of(
             "reindex_repo", "add_repo", "remove_repo", "start_watching", "stop_watching");

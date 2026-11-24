@@ -18,6 +18,10 @@
             <groupId>com.codegraph</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.codegraph</groupId>
+            <artifactId>deps</artifactId>
+        </dependency>
 
         <!-- Jackson -->
         <dependency>
