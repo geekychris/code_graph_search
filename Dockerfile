@@ -2,8 +2,10 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /src
 COPY . .
-# frontend-maven-plugin downloads its own Node to build the UI
-RUN mvn -B -q -DskipTests package
+# frontend-maven-plugin downloads its own Node to build the UI.
+# Only the server and the modules it needs: the JavaFX desktop module has no
+# linux-aarch64 jars, so building it fails on arm64 hosts such as spark.
+RUN mvn -B -q -DskipTests -pl app -am package
 
 # glibc-based JRE (Ubuntu): native libraries (RocksDB, tree-sitter) need glibc
 FROM eclipse-temurin:21-jre

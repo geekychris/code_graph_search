@@ -61,22 +61,6 @@
                 <version>3.3.1</version>
                 <executions>
                     <execution>
-                        <id>copy-frontend-build</id>
-                        <phase>process-resources</phase>
-                        <goals>
-                            <goal>copy-resources</goal>
-                        </goals>
-                        <configuration>
-                            <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
-                            <resources>
-                                <resource>
-                                    <directory>src/main/frontend/dist</directory>
-                                    <filtering>false</filtering>
-                                </resource>
-                            </resources>
-                        </configuration>
-                    </execution>
-                    <execution>
                         <id>copy-placeholder</id>
                         <phase>process-resources</phase>
                         <goals>
@@ -87,6 +71,24 @@
                             <resources>
                                 <resource>
                                     <directory>src/main/resources/static</directory>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>copy-frontend-build</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                            <!-- the placeholder index.html was copied first and is newer -->
+                            <overwrite>true</overwrite>
+                            <resources>
+                                <resource>
+                                    <directory>src/main/frontend/dist</directory>
                                     <filtering>false</filtering>
                                 </resource>
                             </resources>

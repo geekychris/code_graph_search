@@ -107,6 +107,10 @@ kubectl apply -f deploy/k8s/codegraph.yaml   # create codegraph-secrets first; s
 
 Run a single replica: RocksDB and Lucene lock the data volume.
 
+On spark (microk8s, arm64), `scripts/deploy-spark.sh` builds the image on the host,
+imports it into microk8s, and applies the manifest with the image pinned to the
+commit and the Service on NodePort 30930.
+
 To get push webhooks, add a webhook to each repo (or the account) pointing at
 `https://<host>/api/hooks/github`, content type `application/json`, with the secret
 from `CODEGRAPH_WEBHOOK_SECRET`.
