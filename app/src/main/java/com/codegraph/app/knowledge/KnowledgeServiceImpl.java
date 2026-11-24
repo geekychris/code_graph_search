@@ -427,6 +427,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
               diagram   One Mermaid diagram (flowchart LR/TB preferred) of the main components and the flows
                         between them, labelled with real module or class names. No styling or click handlers.
               concepts  5-20 items: {name, kind, summary, howToUse?, details?, anchors:[{qualifiedName|path, label?}]}.
+                        Anchors: a qualified name as the code graph has it (Java com.x.Y, Go pkg.Type or
+                        pkg.Type.Method), or a repo-relative file path.
                         kind is one of capability, technique, pattern, api, infrastructure, domain.
                         Name concepts the way someone would search for them ("vector search", "JWT auth",
                         "durable scheduler"); reuse an existing concept name when it is the same idea
@@ -516,9 +518,13 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             }
         }
         if (a.path() != null && !a.path().isBlank()) {
-            List<CodeElement> els = indexer.getElementsByFile(repoId, a.path().strip());
-            Optional<CodeElement> file = els.stream().filter(e -> e.getElementType().name().equals("FILE")).findFirst();
-            if (file.isPresent()) return anchorFor(a, file.get());
+            // The file element if the parser made one (not every parser does), else the file's first type or function
+            List<CodeElement> els = indexer.getElementsByFile(repoId, a.path().strip().replaceFirst("^\\./", ""));
+            Optional<CodeElement> best = els.stream().filter(e -> e.getElementType().name().equals("FILE")).findFirst()
+                    .or(() -> els.stream().filter(e -> ArchitectureBuilder.TYPE_KINDS.contains(e.getElementType()))
+                            .min(Comparator.comparingInt(CodeElement::getLineStart)))
+                    .or(() -> els.stream().min(Comparator.comparingInt(CodeElement::getLineStart)));
+            if (best.isPresent()) return anchorFor(a, best.get());
         }
         return new Anchor(a.label(), a.qualifiedName(), a.path(), null, null);
     }

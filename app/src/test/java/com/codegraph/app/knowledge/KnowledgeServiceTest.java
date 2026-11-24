@@ -176,11 +176,12 @@ class KnowledgeServiceTest {
                 "```mermaid\nflowchart LR\n  Store --> Codec\n```",
                 List.of(new Concept(null, "Key Value Store", "infrastructure", "Stores strings", null, "Call Store.put",
                                 List.of(new Anchor(null, "com.x.kv.store.Store", null, null, null),
+                                        new Anchor(null, null, "src/main/java/com/x/kv/codec/Codec.java", null, null),
                                         new Anchor(null, "com.x.nope.Missing", null, null, null)), null),
                         new Concept(null, "Codec", "weird-kind", "Encodes", null, null, List.of(), null))),
                 "test");
         assertThat(result.concepts()).isEqualTo(2);
-        assertThat(result.anchorsResolved()).isEqualTo(1);
+        assertThat(result.anchorsResolved()).isEqualTo(2);
         assertThat(result.anchorsUnresolved()).isEqualTo(1);
         // lib is public and the text names the private repo "app"? too short to check (< 5 chars): no warning
         RepoKnowledge k = knowledge.knowledge("lib").orElseThrow();
