@@ -33,9 +33,9 @@ secrets:
       - {key: CODEGRAPH_PUBLIC_TOKEN, generate: hex32}
       - {key: CODEGRAPH_WEBHOOK_SECRET, generate: hex32}
 
-# Tools & consoles → Apps in cloud-stack's UI, and codegraph.hitorro.com on the LAN
+# Tools & consoles → Apps in cloud-stack's UI, and https://codegraph.hitorro.com (passkey sign-in)
 console: {title: Code Graph}
-route: {name: codegraph, exposure: internal}
+route: {name: codegraph, exposure: login}   # https://codegraph.hitorro.com behind the passkey sign-in
 
 # What cloud-stack can offer its agents once installed
 mcp: {path: /mcp, transport: http, token: {secret: codegraph-secrets, key: CODEGRAPH_READER_TOKEN}}
