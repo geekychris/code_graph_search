@@ -148,6 +148,10 @@ public class Main {
             graphService.addIndexListener(knowledge::onRepoIndexed);
         }
 
+        // Project stats: files and lines by language and kind, per repo and rolled up
+        com.codegraph.app.stats.StatsServiceImpl stats = new com.codegraph.app.stats.StatsServiceImpl(graphService, knowledge);
+        graphService.addIndexListener(stats::onRepoIndexed);
+
         List<RepoConfig> localRepos = new ArrayList<>(config.getRepos());
         localRepos.addAll(persistedLocalRepos(config, graphService));
         if (!localRepos.isEmpty()) {
@@ -178,6 +182,7 @@ public class Main {
         McpServer mcpServer = new McpServer(scopedGraph, mapper);
         mcpServer.registerDependencyTools(dependencies, scopedGraph::canSeeRepo);
         if (knowledge != null) mcpServer.registerKnowledgeTools(knowledge, scopedGraph::canSeeRepo);
+        mcpServer.registerStatsTools(stats, scopedGraph::canSeeRepo);
         mcpServer.registerAllTools();
         mcpServer.setIndexManagement(indexManagement);
 
@@ -199,10 +204,12 @@ public class Main {
         restServer.setIndexManagement(indexManagement);
         restServer.setDependencies(dependencies);
         if (knowledge != null) restServer.setKnowledge(knowledge);
+        restServer.setStats(stats);
 
         PortfolioService portfolio = null;
         if (config.getPortfolio().isEnabled()) {
             portfolio = PortfolioService.fromConfig(config.getPortfolio(), graphService, parserRegistry);
+            portfolio.setStats(stats);
             restServer.setPortfolio(portfolio);
         }
         restServer.start();
