@@ -4,7 +4,11 @@ import com.codegraph.core.config.AppConfig;
 import com.codegraph.core.config.RepoConfig;
 import com.codegraph.core.model.*;
 import com.codegraph.core.service.GraphService;
+import com.codegraph.core.security.Principal;
+import com.codegraph.core.security.RequestContext;
 import com.codegraph.core.service.IndexManagementService;
+import com.codegraph.core.service.PortfolioControl;
+import com.codegraph.core.service.ScopedGraphService;
 import com.codegraph.indexer.IndexerService;
 import com.codegraph.mcp.McpServer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,6 +41,9 @@ public class RestServer {
     private final AppConfig config;
     private final ObjectMapper mapper;
     private IndexManagementService indexManagement;
+    private PortfolioControl portfolio;
+    private java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies;
+    private final ApiAuth auth;
 
     private Javalin app;
 
@@ -45,10 +52,29 @@ public class RestServer {
         this.mcpServer = mcpServer;
         this.config = config;
         this.mapper = mapper;
+        this.auth = new ApiAuth(config.getAuth());
     }
 
     public void setIndexManagement(IndexManagementService indexManagement) {
         this.indexManagement = indexManagement;
+    }
+
+    public void setPortfolio(PortfolioControl portfolio) {
+        this.portfolio = portfolio;
+    }
+
+    public void setDependencies(java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies) {
+        this.dependencies = dependencies;
+    }
+
+    /** Whether the current caller may see a repo. */
+    private boolean visibleRepo(String repoId) {
+        return !(graphService instanceof ScopedGraphService scoped) || scoped.canSeeRepo(repoId);
+    }
+
+    /** The service without visibility filtering, for indexing work. */
+    private GraphService rawGraph() {
+        return graphService instanceof ScopedGraphService scoped ? scoped.unwrap() : graphService;
     }
 
     // -------------------------------------------------------------------------
@@ -57,20 +83,29 @@ public class RestServer {
 
     public void start() {
         app = Javalin.create(cfg -> {
-            // Static files: serve React UI from classpath /static
-            cfg.staticFiles.add(staticFiles -> {
-                staticFiles.hostedPath = "/";
-                staticFiles.directory = "/static";
-                staticFiles.location = io.javalin.http.staticfiles.Location.CLASSPATH;
-            });
+            // Static files: serve the React UI from classpath /static when it is bundled
+            boolean uiBundled = RestServer.class.getResource("/static/index.html") != null;
+            if (uiBundled) {
+                cfg.staticFiles.add(staticFiles -> {
+                    staticFiles.hostedPath = "/";
+                    staticFiles.directory = "/static";
+                    staticFiles.location = io.javalin.http.staticfiles.Location.CLASSPATH;
+                });
+                // SPA fallback: all unmatched GET requests serve index.html
+                cfg.spaRoot.addFile("/", "/static/index.html", io.javalin.http.staticfiles.Location.CLASSPATH);
+            } else {
+                log.warn("UI bundle not found on the classpath; serving the API only");
+            }
 
-            // SPA fallback: all unmatched GET requests serve index.html
-            cfg.spaRoot.addFile("/", "/static/index.html", io.javalin.http.staticfiles.Location.CLASSPATH);
-
-            // CORS
+            // CORS (off by default; the UI is served from the same origin)
             if (config.getServer().isCorsEnabled()) {
+                List<String> origins = config.getServer().getCorsAllowedOrigins();
                 cfg.bundledPlugins.enableCors(cors -> cors.addRule(rule -> {
-                    rule.anyHost();
+                    if (origins == null || origins.isEmpty()) {
+                        rule.anyHost();
+                    } else {
+                        origins.forEach(o -> rule.allowHost(o));
+                    }
                     rule.allowCredentials = false;
                 }));
             }
@@ -96,6 +131,33 @@ public class RestServer {
     // -------------------------------------------------------------------------
 
     private void registerRoutes() {
+        // ---- Authentication: every API and MCP request runs as a Principal ----
+        String mcpPathForAuth = config.getServer().getMcpHttpPath();
+        app.before(ctx -> {
+            String path = ctx.path();
+            boolean api = path.startsWith("/api/") || path.equals(mcpPathForAuth);
+            if (!api || path.equals("/api/health") || path.equals("/api/hooks/github")
+                    || ctx.method() == io.javalin.http.HandlerType.OPTIONS) {
+                return;
+            }
+            Optional<Principal> principal = auth.authenticate(ctx.header("Authorization"));
+            if (principal.isEmpty()) {
+                ctx.status(HttpStatus.UNAUTHORIZED);
+                ctx.header("WWW-Authenticate", "Bearer");
+                jsonError(ctx, "A valid bearer token is required");
+                ctx.skipRemainingHandlers();
+                return;
+            }
+            if (requiresAdmin(ctx) && !principal.get().admin()) {
+                ctx.status(HttpStatus.FORBIDDEN);
+                jsonError(ctx, "This operation needs an admin token");
+                ctx.skipRemainingHandlers();
+                return;
+            }
+            RequestContext.set(principal.get());
+        });
+        app.after(ctx -> RequestContext.clear());
+
         // ---- Repositories ----
         app.get("/api/repos",               this::handleListRepos);
         app.post("/api/repos",              this::handleAddRepo);
@@ -156,6 +218,20 @@ public class RestServer {
         app.post("/api/repos/{id}/watch",      this::handleStartWatching);
         app.delete("/api/repos/{id}/watch",    this::handleStopWatching);
 
+        // ---- Portfolio (GitHub sync) ----
+        app.get("/api/whoami",                         this::handleWhoAmI);
+        app.get("/api/portfolio/status",               this::handlePortfolioStatus);
+        app.post("/api/portfolio/sync",                this::handlePortfolioSync);
+        app.post("/api/portfolio/repos/{id}/refresh",  this::handlePortfolioRefresh);
+        app.post("/api/hooks/github",                  this::handleGitHubWebhook);
+
+        // ---- Dependencies across repos ----
+        app.get("/api/deps/repos/{id}", this::handleDepsRepo);
+        app.get("/api/deps/edges",      this::handleDepsEdges);
+        app.get("/api/deps/layers",     this::handleDepsLayers);
+        app.get("/api/deps/drift",      this::handleDepsDrift);
+        app.get("/api/deps/artifacts",  this::handleDepsArtifact);
+
         // ---- System ----
         app.get("/api/status", this::handleStatus);
         app.get("/api/health", ctx -> jsonOk(ctx, Map.of("status", "ok")));
@@ -177,6 +253,146 @@ public class RestServer {
             ctx.status(HttpStatus.INTERNAL_SERVER_ERROR);
             jsonError(ctx, "Internal server error: " + e.getMessage());
         });
+    }
+
+    /** Routes that change what is indexed, or expose the server's filesystem. */
+    private boolean requiresAdmin(Context ctx) {
+        String path = ctx.path();
+        var method = ctx.method();
+        boolean write = method != io.javalin.http.HandlerType.GET && method != io.javalin.http.HandlerType.HEAD;
+        if (path.startsWith("/api/browse")) return true;
+        if (path.startsWith("/api/portfolio/") && write) return true;
+        return path.startsWith("/api/repos") && write;
+    }
+
+    // -------------------------------------------------------------------------
+    // Portfolio handlers
+    // -------------------------------------------------------------------------
+
+    private void handleWhoAmI(Context ctx) {
+        Principal p = RequestContext.current();
+        Map<String, Object> me = new LinkedHashMap<>();
+        me.put("name", p.name());
+        me.put("seesPrivate", p.seesPrivate());
+        me.put("admin", p.admin());
+        me.put("authEnabled", auth.isEnabled());
+        jsonOk(ctx, me);
+    }
+
+    private void handlePortfolioStatus(Context ctx) {
+        if (portfolio == null) {
+            jsonOk(ctx, Map.of("enabled", false));
+            return;
+        }
+        Map<String, Object> status = new LinkedHashMap<>(portfolio.status());
+        status.put("enabled", true);
+        jsonOk(ctx, status);
+    }
+
+    private void handlePortfolioSync(Context ctx) {
+        if (portfolio == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Portfolio sync is not enabled");
+            return;
+        }
+        jsonOk(ctx, portfolio.syncNow());
+    }
+
+    private void handlePortfolioRefresh(Context ctx) {
+        String id = ctx.pathParam("id");
+        if (portfolio == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Portfolio sync is not enabled");
+            return;
+        }
+        if (!portfolio.enqueue(id)) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "Repository not found: " + id);
+            return;
+        }
+        jsonOk(ctx, Map.of("queued", id));
+    }
+
+    private void handleGitHubWebhook(Context ctx) {
+        if (portfolio == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Portfolio sync is not enabled");
+            return;
+        }
+        byte[] body = ctx.bodyAsBytes();
+        if (!portfolio.verifySignature(body, ctx.header("X-Hub-Signature-256"))) {
+            ctx.status(HttpStatus.UNAUTHORIZED);
+            jsonError(ctx, "Invalid or missing webhook signature");
+            return;
+        }
+        jsonOk(ctx, Map.of("result", portfolio.handleWebhook(ctx.header("X-GitHub-Event"), body)));
+    }
+
+    // -------------------------------------------------------------------------
+    // Dependency handlers
+    // -------------------------------------------------------------------------
+
+    private com.codegraph.deps.graph.DependencyGraph depsOrFail(Context ctx) {
+        if (dependencies == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Dependency analysis is not enabled");
+            return null;
+        }
+        return dependencies.get();
+    }
+
+    private void handleDepsRepo(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String id = ctx.pathParam("id");
+        if (!visibleRepo(id) || !g.repos().contains(id)) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "No dependency information for repository: " + id);
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("repo", id);
+        out.put("produces", g.producedBy(id));
+        out.put("dependencies", g.dependenciesOf(id, this::visibleRepo));
+        out.put("dependents", g.dependentsOf(id, this::visibleRepo));
+        out.put("transitiveDependencies", g.closure(id, -1, false, false, this::visibleRepo));
+        out.put("external", g.externalDependencies(id));
+        out.put("modules", g.manifests(id).modules());
+        out.put("warnings", g.manifests(id).warnings());
+        jsonOk(ctx, out);
+    }
+
+    private void handleDepsEdges(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g != null) jsonOk(ctx, g.edges(this::visibleRepo));
+    }
+
+    private void handleDepsLayers(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String prefix = Optional.ofNullable(ctx.queryParam("prefix")).orElse("");
+        jsonOk(ctx, g.layers(this::visibleRepo, r -> r.startsWith(prefix)));
+    }
+
+    private void handleDepsDrift(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g != null) jsonOk(ctx, g.drift(this::visibleRepo));
+    }
+
+    private void handleDepsArtifact(Context ctx) {
+        var g = depsOrFail(ctx);
+        if (g == null) return;
+        String key = ctx.queryParam("key");
+        if (key == null || key.isBlank()) {
+            ctx.status(HttpStatus.BAD_REQUEST);
+            jsonError(ctx, "'key' is required, e.g. maven:com.hitorro:hitorro-core");
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("artifact", key);
+        out.put("producers", g.producersOf(key, this::visibleRepo));
+        out.put("users", g.usersOf(key, this::visibleRepo));
+        jsonOk(ctx, out);
     }
 
     // -------------------------------------------------------------------------
@@ -217,6 +433,10 @@ public class RestServer {
             }
             String desc = getString(body, "description");
             if (desc != null) repo.setDescription(desc);
+            repo.setSource("local");
+            String visibility = getString(body, "visibility");
+            if ("public".equalsIgnoreCase(visibility)) repo.setVisibility(Visibility.PUBLIC);
+            else repo.setVisibility(Visibility.PRIVATE);
 
             graphService.saveRepository(repo);
 
@@ -254,6 +474,11 @@ public class RestServer {
             return;
         }
         Repository repo = existing.get();
+        if (portfolio != null && repo.getGitUrl() != null) {
+            portfolio.enqueue(id);
+            jsonOk(ctx, Map.of("status", "queued", "repoId", id));
+            return;
+        }
         repo.setStatus(Repository.IndexingStatus.PENDING);
         graphService.saveRepository(repo);
         Thread.ofVirtual().start(() -> triggerIndexing(repo));
@@ -921,7 +1146,7 @@ public class RestServer {
         log.info("Starting indexing for repo: {}", repo.getId());
 
         try {
-            if (!(graphService instanceof IndexerService indexerService)) {
+            if (!(rawGraph() instanceof IndexerService indexerService)) {
                 log.error("GraphService is not an IndexerService — cannot index repo {}", repo.getId());
                 repo.setStatus(Repository.IndexingStatus.ERROR);
                 graphService.saveRepository(repo);

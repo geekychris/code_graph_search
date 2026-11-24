@@ -264,6 +264,14 @@ treeSitter:
   timeoutSeconds: 30
 ```
 
+### Portfolio service (all your GitHub repos)
+
+Code Graph Search can also run as a shared service that indexes every repository a
+GitHub account owns, keeps up with pushes, and filters results by who is asking
+(public repos only, or public and private). See
+[docs/PORTFOLIO_SERVICE.md](docs/PORTFOLIO_SERVICE.md) for configuration, access
+control and deployment (`Dockerfile`, `deploy/k8s/codegraph.yaml`).
+
 ## Usage
 
 ### REST API + Web UI

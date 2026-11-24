@@ -32,6 +32,8 @@ public class IndexerService implements GraphService {
     private final GraphStore    graph;
     private final MetadataStore metadata;
     private final ExecutorService executor;
+    private long maxFileBytes = 1_000_000;
+    private final List<java.util.function.Consumer<String>> indexListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     // -------------------------------------------------------------------------
     // Construction
@@ -39,6 +41,7 @@ public class IndexerService implements GraphService {
 
     public IndexerService(AppConfig.IndexerConfig config) {
         this(config.getDataDir(), config.getIndexingThreads());
+        this.maxFileBytes = config.getMaxFileBytes();
     }
 
     public IndexerService(String dataDir) {
@@ -526,8 +529,14 @@ public class IndexerService implements GraphService {
         indexRepository(repoConfig, ParserRegistry.withDefaults());
     }
 
+    /** Counts from one indexing run. */
+    public record IndexStats(int files, int elements, int errors, int deleted) {}
+
     /**
      * Indexes an entire repository using the supplied ParserRegistry.
+     *
+     * <p>Each file's previous elements are replaced, and files that were indexed before
+     * but no longer exist are removed, so a full re-index never leaves stale elements.
      */
     public void indexRepository(RepoConfig repoConfig, ParserRegistry parserRegistry) {
         String repoId = repoConfig.getId();
@@ -538,26 +547,11 @@ public class IndexerService implements GraphService {
             return;
         }
 
-        // Create/update Repository record
-        Repository repo = getRepository(repoId).orElseGet(Repository::new);
-        repo.setId(repoId);
-        repo.setName(repoConfig.getName() != null ? repoConfig.getName() : repoId);
-        repo.setRootPath(repoConfig.getPath());
-        if (repoConfig.getLanguages() != null && !repoConfig.getLanguages().isEmpty()) {
-            repo.setLanguages(repoConfig.getLanguages());
-        }
-        repo.setStatus(Repository.IndexingStatus.INDEXING);
-        saveRepository(repo);
-
+        Repository repo = beginIndexing(repoConfig);
         log.info("Indexing repo '{}' at {}", repoId, root);
 
-        AtomicInteger fileCount = new AtomicInteger(0);
-        AtomicInteger elementCount = new AtomicInteger(0);
-        AtomicInteger errorCount = new AtomicInteger(0);
-
         try {
-            List<Path> filesToParse = new ArrayList<>();
-
+            List<String> current = new ArrayList<>();
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
@@ -570,7 +564,7 @@ public class IndexerService implements GraphService {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (!isExcluded(file, root, repoConfig)) {
-                        filesToParse.add(file);
+                        current.add(relative(root, file));
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -582,64 +576,169 @@ public class IndexerService implements GraphService {
                 }
             });
 
-            log.info("Repo '{}': found {} files to parse", repoId, filesToParse.size());
+            Set<String> gone = new LinkedHashSet<>(graph.listFilePaths(repoId));
+            gone.removeAll(current);
 
-            CountDownLatch latch = new CountDownLatch(filesToParse.size());
-            for (Path file : filesToParse) {
-                executor.submit(() -> {
-                    try {
-                        ParseResult result = parserRegistry.parse(file, repoId, root);
-                        fileCount.incrementAndGet();
-                        if (result.isSuccess()) {
-                            if (!result.getElements().isEmpty()) {
-                                // Save directly — don't use saveElements() which
-                                // submits to the same executor and causes deadlock
-                                graph.saveElements(result.getElements());
-                                for (CodeElement el : result.getElements()) {
-                                    lucene.indexElement(el);
-                                }
-                                elementCount.addAndGet(result.getElements().size());
-                            }
-                            if (!result.getEdges().isEmpty()) {
-                                graph.saveEdges(result.getEdges());
-                            }
-                        } else {
-                            errorCount.incrementAndGet();
-                        }
-                    } catch (Exception e) {
-                        log.error("Error parsing {}: {}", file, e.getMessage(), e);
-                        errorCount.incrementAndGet();
-                    } finally {
-                        latch.countDown();
-                    }
-                });
-            }
-
-            latch.await();
-
-            // Commit Lucene after bulk indexing
-            try { lucene.commit(); } catch (IOException e) {
-                log.warn("Error committing Lucene after indexing: {}", e.getMessage());
-            }
-
-            repo.setStatus(Repository.IndexingStatus.READY);
-            repo.setLastIndexed(Instant.now());
-            repo.setFileCount(fileCount.get());
-            repo.setElementCount(elementCount.get());
-            saveRepository(repo);
-
-            log.info("Repo '{}' indexed: {} files, {} elements, {} parse errors",
-                    repoId, fileCount.get(), elementCount.get(), errorCount.get());
-
+            log.info("Repo '{}': found {} files to parse, {} removed since last index",
+                    repoId, current.size(), gone.size());
+            IndexStats stats = indexFiles(repoConfig, current, gone, parserRegistry);
+            finishIndexing(repo, stats, true);
         } catch (IOException e) {
             log.error("IO error walking repo '{}': {}", repoId, e.getMessage(), e);
             repo.setStatus(Repository.IndexingStatus.ERROR);
             saveRepository(repo);
+        }
+    }
+
+    /**
+     * Re-indexes only the given files of a repository: {@code changed} files are parsed
+     * and replace their previous elements, {@code deleted} files are removed. Paths are
+     * relative to the repo root. Excluded and oversized files are skipped (and their
+     * old elements removed).
+     */
+    public IndexStats indexRepositoryChanges(RepoConfig repoConfig, Collection<String> changed,
+                                             Collection<String> deleted, ParserRegistry parserRegistry) {
+        Repository repo = beginIndexing(repoConfig);
+        IndexStats stats = indexFiles(repoConfig, changed, deleted, parserRegistry);
+        finishIndexing(repo, stats, false);
+        log.info("Repo '{}' updated: {} files parsed, {} removed, {} elements, {} errors",
+                repoConfig.getId(), stats.files(), stats.deleted(), stats.elements(), stats.errors());
+        return stats;
+    }
+
+    private Repository beginIndexing(RepoConfig repoConfig) {
+        String repoId = repoConfig.getId();
+        Repository repo = getRepository(repoId).orElseGet(Repository::new);
+        repo.setId(repoId);
+        repo.setName(repoConfig.getName() != null ? repoConfig.getName() : repoId);
+        repo.setRootPath(repoConfig.getPath());
+        if (repoConfig.getLanguages() != null && !repoConfig.getLanguages().isEmpty()) {
+            repo.setLanguages(repoConfig.getLanguages());
+        }
+        repo.setStatus(Repository.IndexingStatus.INDEXING);
+        saveRepository(repo);
+        return repo;
+    }
+
+    /**
+     * Registers a callback run (on the indexing thread) after each full or incremental
+     * index of a repo, with the repo id. Used for derived data such as dependencies.
+     */
+    public void addIndexListener(java.util.function.Consumer<String> listener) {
+        indexListeners.add(listener);
+    }
+
+    /** Stores derived data for a repo (JSON), keyed by kind. Deleted with the repo. */
+    public void saveRepoFact(String repoId, String kind, String commit, String json) {
+        metadata.putFact(repoId, kind, commit, json);
+    }
+
+    /** All stored facts of one kind: repo id → JSON. */
+    public Map<String, String> listRepoFacts(String kind) {
+        return metadata.listFacts(kind);
+    }
+
+    private void finishIndexing(Repository repo, IndexStats stats, boolean full) {
+        // Re-read so fields set elsewhere during indexing (e.g. by sync) are kept
+        Repository latest = getRepository(repo.getId()).orElse(repo);
+        latest.setStatus(Repository.IndexingStatus.READY);
+        latest.setLastIndexed(Instant.now());
+        latest.setFileCount(graph.listFilePaths(repo.getId()).size());
+        if (full) {
+            latest.setElementCount(stats.elements());
+        } else {
+            latest.setElementCount((int) lucene.count(repoOnly(repo.getId())));
+        }
+        saveRepository(latest);
+        for (var listener : indexListeners) {
+            try {
+                listener.accept(repo.getId());
+            } catch (Exception e) {
+                log.error("Index listener failed for {}: {}", repo.getId(), e.getMessage(), e);
+            }
+        }
+        if (full) {
+            log.info("Repo '{}' indexed: {} files, {} elements, {} parse errors, {} removed",
+                    repo.getId(), stats.files(), stats.elements(), stats.errors(), stats.deleted());
+        }
+    }
+
+    private static SearchQuery repoOnly(String repoId) {
+        SearchQuery q = new SearchQuery();
+        q.setRepoIds(List.of(repoId));
+        return q;
+    }
+
+    private IndexStats indexFiles(RepoConfig repoConfig, Collection<String> changed,
+                                  Collection<String> deleted, ParserRegistry parserRegistry) {
+        String repoId = repoConfig.getId();
+        Path root = Path.of(repoConfig.getPath()).toAbsolutePath().normalize();
+
+        AtomicInteger fileCount = new AtomicInteger(0);
+        AtomicInteger elementCount = new AtomicInteger(0);
+        AtomicInteger errorCount = new AtomicInteger(0);
+        int deletedCount = 0;
+
+        for (String rel : deleted) {
+            deleteElementsForFile(repoId, rel);
+            deletedCount++;
+        }
+
+        CountDownLatch latch = new CountDownLatch(changed.size());
+        for (String rel : changed) {
+            executor.submit(() -> {
+                try {
+                    Path file = root.resolve(rel).normalize();
+                    // Remove the old version first; re-parsing recreates the same ids
+                    graph.deleteElementsForFile(repoId, rel);
+                    lucene.deleteElementsForFile(repoId, rel);
+                    if (!Files.isRegularFile(file) || isExcluded(file, root, repoConfig)
+                            || Files.size(file) > maxFileBytes) {
+                        return;
+                    }
+                    ParseResult result = parserRegistry.parse(file, repoId, root);
+                    fileCount.incrementAndGet();
+                    if (result.isSuccess()) {
+                        if (!result.getElements().isEmpty()) {
+                            // Save directly — don't use saveElements() which
+                            // submits to the same executor and causes deadlock
+                            graph.saveElements(result.getElements());
+                            for (CodeElement el : result.getElements()) {
+                                lucene.indexElement(el);
+                            }
+                            elementCount.addAndGet(result.getElements().size());
+                        }
+                        if (!result.getEdges().isEmpty()) {
+                            graph.saveEdges(result.getEdges());
+                        }
+                    } else {
+                        errorCount.incrementAndGet();
+                    }
+                } catch (Exception e) {
+                    log.error("Error parsing {}/{}: {}", repoId, rel, e.getMessage(), e);
+                    errorCount.incrementAndGet();
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        try {
+            latch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            repo.setStatus(Repository.IndexingStatus.ERROR);
-            saveRepository(repo);
+            log.warn("Interrupted while indexing repo '{}'", repoId);
         }
+
+        // Commit Lucene after bulk indexing
+        try { lucene.commit(); } catch (IOException e) {
+            log.warn("Error committing Lucene after indexing: {}", e.getMessage());
+        }
+        return new IndexStats(fileCount.get(), elementCount.get(), errorCount.get(), deletedCount);
+    }
+
+    private static String relative(Path root, Path file) {
+        return root.relativize(file).toString().replace('\\', '/');
     }
 
     private static boolean isExcluded(Path path, Path repoRoot, RepoConfig repoConfig) {

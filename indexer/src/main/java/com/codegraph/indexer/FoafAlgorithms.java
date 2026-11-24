@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Friend-of-a-Friend (FOAF) graph connectivity algorithms.
@@ -26,6 +27,16 @@ public class FoafAlgorithms {
      */
     static Map<String, CodeEdge> getNeighborEdges(GraphStore store, String elementId,
                                                     EdgeDirection direction, List<EdgeType> edgeTypes) {
+        return getNeighborEdges(store, elementId, direction, edgeTypes, null);
+    }
+
+    /**
+     * As {@link #getNeighborEdges(GraphStore, String, EdgeDirection, List)}, dropping
+     * neighbors rejected by {@code nodeFilter} (null = keep all).
+     */
+    static Map<String, CodeEdge> getNeighborEdges(GraphStore store, String elementId,
+                                                    EdgeDirection direction, List<EdgeType> edgeTypes,
+                                                    Predicate<String> nodeFilter) {
         Map<String, CodeEdge> neighbors = new LinkedHashMap<>();
 
         if (direction == EdgeDirection.OUTGOING || direction == EdgeDirection.BOTH) {
@@ -39,6 +50,7 @@ public class FoafAlgorithms {
                 }
             }
             for (CodeEdge e : outEdges) {
+                if (nodeFilter != null && !nodeFilter.test(e.getToId())) continue;
                 neighbors.putIfAbsent(e.getToId(), e);
             }
         }
@@ -54,6 +66,7 @@ public class FoafAlgorithms {
                 }
             }
             for (CodeEdge e : inEdges) {
+                if (nodeFilter != null && !nodeFilter.test(e.getFromId())) continue;
                 neighbors.putIfAbsent(e.getFromId(), e);
             }
         }
@@ -103,7 +116,7 @@ public class FoafAlgorithms {
                 break;
             }
 
-            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes);
+            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes, query.getNodeFilter());
             for (Map.Entry<String, CodeEdge> entry : neighbors.entrySet()) {
                 if (!parentNode.containsKey(entry.getKey())) {
                     parentNode.put(entry.getKey(), current);
@@ -183,7 +196,7 @@ public class FoafAlgorithms {
 
             if (currentDepth >= maxDepth) continue;
 
-            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes);
+            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes, query.getNodeFilter());
             for (Map.Entry<String, CodeEdge> entry : neighbors.entrySet()) {
                 String neighborId = entry.getKey();
                 int neighborDepth = depthMap.getOrDefault(neighborId, Integer.MAX_VALUE);
@@ -268,7 +281,7 @@ public class FoafAlgorithms {
         Deque<CodeEdge> currentEdges = new ArrayDeque<>();
         Set<String> visited = new HashSet<>();
 
-        dfsAllPaths(store, fromId, toId, direction, edgeTypes, maxDepth, maxPaths,
+        dfsAllPaths(store, fromId, toId, direction, edgeTypes, query.getNodeFilter(), maxDepth, maxPaths,
                 currentPath, currentEdges, visited, allPathIds, allPathEdges, start);
 
         int shortest = allPathIds.stream().mapToInt(p -> p.size() - 1).min().orElse(-1);
@@ -283,7 +296,7 @@ public class FoafAlgorithms {
 
     private static void dfsAllPaths(GraphStore store, String current, String target,
                                       EdgeDirection direction, List<EdgeType> edgeTypes,
-                                      int maxDepth, int maxPaths,
+                                      Predicate<String> nodeFilter, int maxDepth, int maxPaths,
                                       Deque<String> currentPath, Deque<CodeEdge> currentEdges,
                                       Set<String> visited,
                                       List<List<String>> allPaths, List<List<CodeEdge>> allEdges,
@@ -297,11 +310,11 @@ public class FoafAlgorithms {
             allPaths.add(new ArrayList<>(currentPath));
             allEdges.add(new ArrayList<>(currentEdges));
         } else if (currentPath.size() <= maxDepth) {
-            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes);
+            Map<String, CodeEdge> neighbors = getNeighborEdges(store, current, direction, edgeTypes, nodeFilter);
             for (Map.Entry<String, CodeEdge> entry : neighbors.entrySet()) {
                 if (!visited.contains(entry.getKey())) {
                     currentEdges.addLast(entry.getValue());
-                    dfsAllPaths(store, entry.getKey(), target, direction, edgeTypes, maxDepth, maxPaths,
+                    dfsAllPaths(store, entry.getKey(), target, direction, edgeTypes, nodeFilter, maxDepth, maxPaths,
                             currentPath, currentEdges, visited, allPaths, allEdges, startTime);
                     currentEdges.removeLast();
                 }

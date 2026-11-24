@@ -3,6 +3,7 @@ package com.codegraph.app;
 import com.codegraph.core.config.AppConfig;
 import com.codegraph.core.config.RepoConfig;
 import com.codegraph.core.model.Repository;
+import com.codegraph.core.model.Visibility;
 import com.codegraph.core.service.GraphService;
 import com.codegraph.core.service.IndexManagementService;
 import com.codegraph.indexer.IndexerService;
@@ -86,6 +87,9 @@ public class IndexManagementServiceImpl implements IndexManagementService {
         repo.setName(name != null ? name : id);
         repo.setRootPath(root.toString());
         repo.setStatus(Repository.IndexingStatus.PENDING);
+        // Kept in the registry so it is indexed and watched again after a restart
+        repo.setSource("local");
+        repo.setVisibility(Visibility.PRIVATE);
         graphService.saveRepository(repo);
 
         // Start indexing

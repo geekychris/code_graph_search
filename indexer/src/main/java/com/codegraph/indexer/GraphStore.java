@@ -191,7 +191,9 @@ public class GraphStore implements AutoCloseable {
             try (WriteBatch batch = new WriteBatch()) {
                 for (String id : ids) {
                     batch.delete(cfNodes, id.getBytes(StandardCharsets.UTF_8));
-                    deleteEdgesForElement(id, batch);
+                    // Keep edges other files point at these ids: re-parsing recreates the
+                    // same ids, and those files are not being re-parsed.
+                    deleteEdgesForElement(id, batch, false);
                 }
                 batch.delete(cfFileElements, fileKey);
                 db.write(new WriteOptions(), batch);
@@ -359,6 +361,15 @@ public class GraphStore implements AutoCloseable {
     }
 
     private void deleteEdgesForElement(String elementId, WriteBatch batch) throws RocksDBException {
+        deleteEdgesForElement(elementId, batch, true);
+    }
+
+    /**
+     * Deletes the element's outgoing edges, and its incoming edges too when
+     * {@code includeIncoming} is set (whole-repo deletion).
+     */
+    private void deleteEdgesForElement(String elementId, WriteBatch batch, boolean includeIncoming)
+            throws RocksDBException {
         byte[] outPrefix = prefixOf(elementId);
         try (RocksIterator it = db.newIterator(cfEdgesOut)) {
             for (it.seek(outPrefix); it.isValid(); it.next()) {
@@ -371,6 +382,7 @@ public class GraphStore implements AutoCloseable {
                 }
             }
         }
+        if (!includeIncoming) return;
         // Delete all edges_in entries pointing to this element
         byte[] inPrefix = prefixOf(elementId);
         try (RocksIterator it = db.newIterator(cfEdgesIn)) {
@@ -397,6 +409,7 @@ public class GraphStore implements AutoCloseable {
                 String[] parts = parseEdgeKey(it.key());
                 if (parts == null || parts.length != 3) continue;
                 CodeEdge edge = new CodeEdge(parts[0], parts[2], edgeTypeOf(parts[1]));
+                edge.setMetadata(readMetadata(it.value()));
                 result.add(edge);
             }
         }
@@ -416,10 +429,26 @@ public class GraphStore implements AutoCloseable {
                 if (parts == null || parts.length != 3) continue;
                 // parts[0]=toId, parts[1]=edgeType, parts[2]=fromId
                 CodeEdge edge = new CodeEdge(parts[2], parts[0], edgeTypeOf(parts[1]));
+                // Metadata is stored once, on the edges_out entry
+                try {
+                    edge.setMetadata(readMetadata(db.get(cfEdgesOut, edgeOutKey(parts[2], parts[1], parts[0]))));
+                } catch (RocksDBException e) {
+                    log.debug("Cannot read metadata for edge {}: {}", edge.getId(), e.getMessage());
+                }
                 result.add(edge);
             }
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> readMetadata(byte[] value) {
+        if (value == null || value.length == 0) return null;
+        try {
+            return mapper.readValue(value, Map.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // Key builders

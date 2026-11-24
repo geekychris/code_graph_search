@@ -23,6 +23,7 @@ class ParserTest extends BaseIntegrationTest {
         var q = new SearchQuery();
         q.setElementTypes(List.of(ElementType.CLASS));
         q.setLanguages(List.of(Language.JAVA));
+        q.setLimit(500); // the corpus has more classes than the default page of 50
         var classes = graphService.search(q);
         assertThat(classes).isNotEmpty();
         // We know CodeElement class exists

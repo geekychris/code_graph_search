@@ -9,6 +9,13 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CodeEdge {
 
+    /** Metadata key: qualified name the parser expected the target to have. */
+    public static final String META_TARGET_QNAME = "targetQName";
+    /** Metadata key: element type the parser expected the target to have. */
+    public static final String META_TARGET_TYPE = "targetType";
+    /** Metadata key on resolver-made edges: how the target was found ("cross-repo"). */
+    public static final String META_RESOLVED = "resolved";
+
     private String id;
     private String fromId;
     private String toId;

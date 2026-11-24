@@ -1,0 +1,33 @@
+# Config for the container image: index every non-fork geekychris repo.
+# Secrets come from the environment (see deploy/k8s/codegraph.yaml).
+indexer:
+  dataDir: /data
+  autoWatch: false
+  indexingThreads: 4
+
+server:
+  port: 8080
+  mcpHttpEnabled: true
+
+auth:
+  enabled: true
+  anonymous: public
+  tokens:
+    - name: admin
+      tokenEnv: CODEGRAPH_ADMIN_TOKEN
+      scope: all
+      admin: true
+    - name: reader
+      tokenEnv: CODEGRAPH_READER_TOKEN
+      scope: all
+    - name: public-reader
+      tokenEnv: CODEGRAPH_PUBLIC_TOKEN
+      scope: public
+
+portfolio:
+  enabled: true
+  owners: [geekychris]
+  includeForks: false
+  mirrorDir: /data/mirrors
+  syncIntervalMinutes: 30
+  concurrency: 2

@@ -1,6 +1,7 @@
 package com.codegraph.indexer;
 
 import com.codegraph.core.model.Repository;
+import com.codegraph.core.model.Visibility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -8,8 +9,12 @@ import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Manages SQLite metadata for repositories and file index.
@@ -53,6 +58,77 @@ public class MetadataStore implements AutoCloseable {
                 """);
             stmt.executeUpdate("CREATE INDEX IF NOT EXISTS idx_file_index_repo ON file_index(repo_id)");
         }
+        try (Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS repo_facts (
+                    repo_id    TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    commit_sha TEXT,
+                    json       TEXT NOT NULL,
+                    updated    TEXT,
+                    PRIMARY KEY (repo_id, kind)
+                )
+                """);
+        }
+        migratePortfolioColumns();
+    }
+
+    // -------------------------------------------------------------------------
+    // Repo facts: derived data per repo and kind (e.g. "manifests"), as JSON
+    // -------------------------------------------------------------------------
+
+    public synchronized void putFact(String repoId, String kind, String commit, String json) {
+        String sql = """
+            INSERT INTO repo_facts (repo_id, kind, commit_sha, json, updated) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id, kind) DO UPDATE SET
+                commit_sha = excluded.commit_sha, json = excluded.json, updated = excluded.updated
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, repoId);
+            ps.setString(2, kind);
+            ps.setString(3, commit);
+            ps.setString(4, json);
+            ps.setString(5, Instant.now().toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.error("Failed to store {} for {}: {}", kind, repoId, e.getMessage(), e);
+        }
+    }
+
+    /** All facts of one kind: repo id → JSON. */
+    public synchronized Map<String, String> listFacts(String kind) {
+        Map<String, String> out = new LinkedHashMap<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT repo_id, json FROM repo_facts WHERE kind = ? ORDER BY repo_id")) {
+            ps.setString(1, kind);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) out.put(rs.getString(1), rs.getString(2));
+            }
+        } catch (SQLException e) {
+            log.error("Failed to list {}: {}", kind, e.getMessage(), e);
+        }
+        return out;
+    }
+
+    /** Portfolio columns added after the first release; older databases get them here. */
+    private static final String[][] PORTFOLIO_COLUMNS = {
+        {"visibility", "TEXT"}, {"source", "TEXT"}, {"git_url", "TEXT"}, {"html_url", "TEXT"},
+        {"default_branch", "TEXT"}, {"indexed_commit", "TEXT"}, {"pushed_at", "TEXT"},
+        {"archived", "INT DEFAULT 0"}
+    };
+
+    private void migratePortfolioColumns() throws SQLException {
+        Set<String> existing = new HashSet<>();
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("PRAGMA table_info(repos)")) {
+            while (rs.next()) existing.add(rs.getString("name"));
+        }
+        try (Statement stmt = conn.createStatement()) {
+            for (String[] col : PORTFOLIO_COLUMNS) {
+                if (!existing.contains(col[0])) {
+                    stmt.executeUpdate("ALTER TABLE repos ADD COLUMN " + col[0] + " " + col[1]);
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -61,16 +137,25 @@ public class MetadataStore implements AutoCloseable {
 
     public synchronized void upsertRepo(Repository repo) {
         String sql = """
-            INSERT INTO repos (id, name, root_path, status, last_indexed, element_count, file_count, description)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO repos (id, name, root_path, status, last_indexed, element_count, file_count, description,
+                               visibility, source, git_url, html_url, default_branch, indexed_commit, pushed_at, archived)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                name          = excluded.name,
-                root_path     = excluded.root_path,
-                status        = excluded.status,
-                last_indexed  = excluded.last_indexed,
-                element_count = excluded.element_count,
-                file_count    = excluded.file_count,
-                description   = excluded.description
+                name           = excluded.name,
+                root_path      = excluded.root_path,
+                status         = excluded.status,
+                last_indexed   = excluded.last_indexed,
+                element_count  = excluded.element_count,
+                file_count     = excluded.file_count,
+                description    = excluded.description,
+                visibility     = excluded.visibility,
+                source         = excluded.source,
+                git_url        = excluded.git_url,
+                html_url       = excluded.html_url,
+                default_branch = excluded.default_branch,
+                indexed_commit = excluded.indexed_commit,
+                pushed_at      = excluded.pushed_at,
+                archived       = excluded.archived
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, repo.getId());
@@ -81,6 +166,14 @@ public class MetadataStore implements AutoCloseable {
             ps.setInt(6, repo.getElementCount());
             ps.setInt(7, repo.getFileCount());
             ps.setString(8, repo.getDescription());
+            ps.setString(9, repo.getVisibility() != null ? repo.getVisibility().name() : null);
+            ps.setString(10, repo.getSource());
+            ps.setString(11, repo.getGitUrl());
+            ps.setString(12, repo.getHtmlUrl());
+            ps.setString(13, repo.getDefaultBranch());
+            ps.setString(14, repo.getIndexedCommit());
+            ps.setString(15, repo.getPushedAt() != null ? repo.getPushedAt().toString() : null);
+            ps.setInt(16, repo.isArchived() ? 1 : 0);
             ps.executeUpdate();
         } catch (SQLException e) {
             log.error("Failed to upsert repo {}: {}", repo.getId(), e.getMessage(), e);
@@ -142,43 +235,6 @@ public class MetadataStore implements AutoCloseable {
     // File index operations
     // -------------------------------------------------------------------------
 
-    public synchronized void upsertFileIndex(String repoId, String filePath, long lastModified, String fileHash) {
-        String sql = """
-            INSERT INTO file_index (repo_id, file_path, last_modified, file_hash)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(repo_id, file_path) DO UPDATE SET
-                last_modified = excluded.last_modified,
-                file_hash     = excluded.file_hash
-            """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, repoId);
-            ps.setString(2, filePath);
-            ps.setLong(3, lastModified);
-            ps.setString(4, fileHash);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            log.error("Failed to upsert file index {}/{}: {}", repoId, filePath, e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Returns true if the file is new (not in index) or its lastModified has changed.
-     */
-    public synchronized boolean isFileModified(String repoId, String filePath, long lastModified) {
-        String sql = "SELECT last_modified FROM file_index WHERE repo_id = ? AND file_path = ?";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, repoId);
-            ps.setString(2, filePath);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return true; // new file
-                return rs.getLong("last_modified") != lastModified;
-            }
-        } catch (SQLException e) {
-            log.error("Failed to check file modified {}/{}: {}", repoId, filePath, e.getMessage(), e);
-            return true; // assume modified on error
-        }
-    }
-
     public synchronized void deleteFileIndex(String repoId, String filePath) {
         String sql = "DELETE FROM file_index WHERE repo_id = ? AND file_path = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -194,9 +250,12 @@ public class MetadataStore implements AutoCloseable {
         String sql1 = "DELETE FROM file_index WHERE repo_id = ?";
         String sql2 = "DELETE FROM repos WHERE id = ?";
         try (PreparedStatement ps1 = conn.prepareStatement(sql1);
-             PreparedStatement ps2 = conn.prepareStatement(sql2)) {
+             PreparedStatement ps2 = conn.prepareStatement(sql2);
+             PreparedStatement ps3 = conn.prepareStatement("DELETE FROM repo_facts WHERE repo_id = ?")) {
             ps1.setString(1, repoId);
             ps1.executeUpdate();
+            ps3.setString(1, repoId);
+            ps3.executeUpdate();
             ps2.setString(1, repoId);
             ps2.executeUpdate();
         } catch (SQLException e) {
@@ -224,6 +283,20 @@ public class MetadataStore implements AutoCloseable {
         repo.setElementCount(rs.getInt("element_count"));
         repo.setFileCount(rs.getInt("file_count"));
         repo.setDescription(rs.getString("description"));
+        String visibility = rs.getString("visibility");
+        if (visibility != null) {
+            try { repo.setVisibility(Visibility.valueOf(visibility)); } catch (Exception ignored) {}
+        }
+        repo.setSource(rs.getString("source"));
+        repo.setGitUrl(rs.getString("git_url"));
+        repo.setHtmlUrl(rs.getString("html_url"));
+        repo.setDefaultBranch(rs.getString("default_branch"));
+        repo.setIndexedCommit(rs.getString("indexed_commit"));
+        String pushedAt = rs.getString("pushed_at");
+        if (pushedAt != null) {
+            try { repo.setPushedAt(Instant.parse(pushedAt)); } catch (Exception ignored) {}
+        }
+        repo.setArchived(rs.getInt("archived") != 0);
         return repo;
     }
 

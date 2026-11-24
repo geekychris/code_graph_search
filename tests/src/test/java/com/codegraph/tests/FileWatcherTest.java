@@ -86,6 +86,17 @@ class FileWatcherTest {
         Files.writeString(file, content);
     }
 
+    /**
+     * Waits for the watcher to catch up. macOS's WatchService polls (every few seconds),
+     * so a fixed short sleep is not enough there; Linux usually reacts within the debounce.
+     */
+    private static void awaitUntil(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(200);
+        }
+    }
+
     @AfterAll
     void tearDown() throws IOException {
         watcher.stop();
@@ -123,13 +134,10 @@ class FileWatcherTest {
                 }
                 """);
 
-        // Wait for watcher debounce + processing
-        TimeUnit.MILLISECONDS.sleep(800);
-
         var q = new SearchQuery("World");
         q.setElementTypes(List.of(ElementType.CLASS));
-        var results = service.search(q);
-        assertThat(results).anyMatch(e -> e.getName().equals("World"));
+        awaitUntil(() -> service.search(q).stream().anyMatch(e -> e.getName().equals("World")));
+        assertThat(service.search(q)).anyMatch(e -> e.getName().equals("World"));
     }
 
     @Test
@@ -150,10 +158,9 @@ class FileWatcherTest {
                 }
                 """);
 
-        TimeUnit.MILLISECONDS.sleep(800);
-
         var q = new SearchQuery("toUpperCase");
         q.setElementTypes(List.of(ElementType.METHOD));
+        awaitUntil(() -> service.search(q).stream().anyMatch(e -> e.getName().equals("toUpperCase")));
         var results = service.search(q);
         assertThat(results).isNotEmpty();
         assertThat(results).anyMatch(e -> e.getName().equals("toUpperCase"));
@@ -169,7 +176,7 @@ class FileWatcherTest {
 
         // Delete the file
         Files.deleteIfExists(tempRepoDir.resolve("com/example/World.java"));
-        TimeUnit.MILLISECONDS.sleep(800);
+        awaitUntil(() -> service.search(q).stream().noneMatch(e -> e.getName().equals("World")));
 
         // World class should be removed
         var results = service.search(q);
