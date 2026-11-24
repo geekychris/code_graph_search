@@ -366,7 +366,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         b.put("repo", Map.of(
                 "id", repo.getId(),
                 "visibility", repo.getVisibility() == null ? "PRIVATE" : repo.getVisibility().name(),
-                "languages", repo.getLanguages() == null ? List.of() : repo.getLanguages(),
+                "languages", repo.getLanguages() != null && !repo.getLanguages().isEmpty() ? repo.getLanguages()
+                        : fileGraph(repo).files().stream().map(FileGraph.FileNode::language).distinct().sorted().toList(),
                 "elements", repo.getElementCount(),
                 "files", repo.getFileCount(),
                 "url", Objects.toString(repo.getHtmlUrl(), ""),
