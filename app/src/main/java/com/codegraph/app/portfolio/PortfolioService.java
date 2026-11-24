@@ -279,7 +279,7 @@ public class PortfolioService implements PortfolioControl {
         rc.setVisibility(repo.getVisibility());
         rc.setDescription(repo.getDescription());
         List<String> excludes = new ArrayList<>(defaultExcludes);
-        excludes.addAll(List.of("**/dist/**", "**/vendor/**", "**/.venv/**", "**/__pycache__/**", "**/*.min.js"));
+        excludes.addAll(List.of("**/dist/**", "**/vendor/**", "**/.venv/**", "**/venv/**", "**/site-packages/**", "**/__pycache__/**", "**/.tox/**", "**/*.min.js"));
         rc.setExcludePatterns(excludes);
         return rc;
     }
