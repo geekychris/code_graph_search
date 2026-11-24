@@ -50,4 +50,4 @@ body {
 .md table { border-collapse: collapse; margin: 0 0 0.75em; font-size: 0.9em; }
 .md th, .md td { border: 1px solid #334155; padding: 0.3em 0.6em; text-align: left; }
 .md blockquote { border-left: 3px solid #334155; padding-left: 0.8em; color: #94a3b8; }
-.mermaid-host svg { max-height: 640px; }
+.mermaid-host svg { max-height: 760px; }
