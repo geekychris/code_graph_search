@@ -147,16 +147,29 @@ REST: `GET /api/portfolio/overview`, `/api/portfolio/synthesis`, `/api/repos/{id
 
 ## Deploying
 
+The repo is a cloud-stack app: `cloudstack.app.yaml` describes:
+- how to build the image;
+- the secret (`codegraph-secrets`: the GitHub token comes from `CODEGRAPH_GITHUB_TOKEN`, and the API tokens and webhook secret are generated);
+- the manifests in `deploy/k8s/`;
+- the service (NodePort 30930) and the health route.
+
 ```bash
-docker build -t code-graph-search .
-kubectl apply -f deploy/k8s/codegraph.yaml   # create codegraph-secrets first; see the file
+# Any cluster your kubectl reaches (Rancher Desktop, a lab host, ...)
+CODEGRAPH_GITHUB_TOKEN=github_pat_... scripts/install-k8s.sh
+
+# From a cloud-stack checkout: install on a lab host and register it in the inventory
+CODEGRAPH_GITHUB_TOKEN=github_pat_... deploy/app/install.sh ~/code/claude_world/code_graph_search spark
 ```
 
-Run a single replica: RocksDB and Lucene lock the data volume.
+Re-running upgrades in place:
+- The image is tagged with the commit.
+- Existing secret values are kept.
+- The index lives on the `codegraph-data` volume.
 
-On spark (microk8s, arm64), `scripts/deploy-spark.sh` builds the image on the host,
-imports it into microk8s, and applies the manifest with the image pinned to the
-commit and the Service on NodePort 30930.
+`--check` and `--render DIR` show what would happen without changing anything.
+The format is described in cloud-stack's `docs/APPS.md`.
+
+Run a single replica: RocksDB and Lucene lock the data volume.
 
 To get push webhooks, add a webhook to each repo (or the account) pointing at
 `https://<host>/api/hooks/github`, content type `application/json`, with the secret
