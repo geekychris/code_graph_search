@@ -612,7 +612,8 @@ public class RestServer {
         }
         Repository repo = existing.get();
         if (portfolio != null && repo.getGitUrl() != null) {
-            portfolio.enqueue(id);
+            // An explicit re-index re-parses everything, even at the same commit
+            portfolio.enqueue(id, true);
             jsonOk(ctx, Map.of("status", "queued", "repoId", id));
             return;
         }

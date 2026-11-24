@@ -87,6 +87,34 @@ class PortfolioServiceTest {
     }
 
     @Test
+    void explicitOrParserChangeReindexReparsesAtTheSameCommit() throws Exception {
+        portfolio.syncAll();
+        awaitIdle();
+        // Simulate parsed state going missing (as with a newly added parser)
+        indexer.deleteElementsForFile("widgets", "src/Alpha.java");
+        assertThat(names("widgets")).doesNotContain("Alpha");
+
+        // A plain sync at the same commit leaves it alone
+        portfolio.enqueue("widgets");
+        awaitIdle();
+        assertThat(names("widgets")).doesNotContain("Alpha");
+
+        // An explicit re-index re-parses every file
+        portfolio.enqueue("widgets", true);
+        awaitIdle();
+        assertThat(names("widgets")).contains("Alpha", "Gamma");
+
+        // A changed parser set makes the next job a full one, and the sync schedules it
+        indexer.deleteElementsForFile("widgets", "src/Alpha.java");
+        indexer.saveRepoFact("widgets", PortfolioService.PARSERS_FACT, head(), "0:older-parsers");
+        PortfolioService.SyncReport report = portfolio.syncAll();
+        assertThat(report.queued()).isEqualTo(1);
+        awaitIdle();
+        assertThat(names("widgets")).contains("Alpha");
+        assertThat(indexer.listRepoFacts(PortfolioService.PARSERS_FACT)).containsEntry("widgets", portfolio.parsersSignature());
+    }
+
+    @Test
     void pushReindexesOnlyChangedFiles() throws Exception {
         portfolio.syncAll();
         awaitIdle();

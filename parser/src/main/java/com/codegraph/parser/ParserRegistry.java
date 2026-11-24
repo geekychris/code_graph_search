@@ -117,6 +117,12 @@ public class ParserRegistry {
             log.warn("Could not register CVisitor: {}", e.getMessage());
         }
         try {
+            registry.register((LanguageParser) Class.forName("com.codegraph.parser.python.PythonSourceParser")
+                    .getDeclaredConstructor().newInstance());
+        } catch (Exception e) {
+            log.warn("Could not register PythonSourceParser: {}", e.getMessage());
+        }
+        try {
             registry.register((LanguageParser) Class.forName("com.codegraph.parser.markdown.MarkdownFileParser")
                     .getDeclaredConstructor().newInstance());
         } catch (Exception e) {

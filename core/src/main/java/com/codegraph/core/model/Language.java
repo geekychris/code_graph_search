@@ -13,6 +13,7 @@ public enum Language {
     JAVASCRIPT("javascript", List.of(".js", ".jsx", ".mjs", ".cjs")),
     C("c", List.of(".c", ".h")),
     CPP("cpp", List.of(".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".h++")),
+    PYTHON("python", List.of(".py", ".pyi")),
     MARKDOWN("markdown", List.of(".md", ".markdown")),
     YAML("yaml", List.of(".yaml", ".yml")),
     JSON("json", List.of(".json")),

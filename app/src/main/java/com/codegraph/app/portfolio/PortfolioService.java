@@ -55,6 +55,15 @@ public class PortfolioService implements PortfolioControl {
 
     /** Repos with a job queued or running; a second request while running re-runs once after. */
     private final ConcurrentHashMap<String, Boolean> inFlight = new ConcurrentHashMap<>();
+    /** Repos whose next index job re-parses every file, whatever the commit. */
+    private final Set<String> forceFull = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Bump when a parser's output changes, so already-indexed repos are re-parsed.
+     * Adding or removing a parser changes the signature by itself.
+     */
+    static final int PARSER_REVISION = 1;
+    static final String PARSERS_FACT = "parsers";
     /** Latest push time seen from GitHub per repo, applied once the repo is indexed. */
     private final ConcurrentHashMap<String, Optional<Instant>> pendingPush = new ConcurrentHashMap<>();
     private volatile SyncReport lastSync;
@@ -202,8 +211,20 @@ public class PortfolioService implements PortfolioControl {
         return repo;
     }
 
+    /** The parsers in use, so repos indexed with an older set can be re-parsed. */
+    String parsersSignature() {
+        return PARSER_REVISION + ":" + parsers.getParsers().stream()
+                .map(p -> p.getLanguage().name() + "=" + p.getClass().getSimpleName()).sorted()
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private boolean parsersChanged(String repoId) {
+        return !parsersSignature().equals(indexer.listRepoFacts(PARSERS_FACT).get(repoId));
+    }
+
     private boolean needsIndexing(Repository repo, RepoLister.RemoteRepo r) {
         if (repo.getIndexedCommit() == null) return true;
+        if (parsersChanged(repo.getId())) return true;
         if (repo.getStatus() == Repository.IndexingStatus.ERROR) return true;
         if (r.pushedAt() == null || repo.getPushedAt() == null) return true;
         return r.pushedAt().isAfter(repo.getPushedAt());
@@ -212,7 +233,14 @@ public class PortfolioService implements PortfolioControl {
     /** Queues an index job for a tracked repo. Returns false if it is unknown. */
     @Override
     public boolean enqueue(String repoId) {
+        return enqueue(repoId, false);
+    }
+
+    /** Queues an index job; with {@code full}, every file is re-parsed even if the commit is unchanged. */
+    @Override
+    public boolean enqueue(String repoId, boolean full) {
         if (indexer.getRepository(repoId).isEmpty()) return false;
+        if (full) forceFull.add(repoId);
         Boolean previous = inFlight.putIfAbsent(repoId, Boolean.FALSE);
         if (previous != null) {
             inFlight.put(repoId, Boolean.TRUE);   // running: run once more when it finishes
@@ -245,8 +273,12 @@ public class PortfolioService implements PortfolioControl {
         Path dir = mirror.dirFor(repoId);
         RepoConfig rc = toRepoConfig(repo, dir);
 
+        boolean full = forceFull.remove(repoId) | parsersChanged(repoId);
         if (sha == null) {
             log.info("Repo {} is empty", repoId);
+        } else if (full) {
+            log.info("Full re-index of {} at {} (requested, or the parsers changed)", repoId, abbrev(sha));
+            indexer.indexRepository(rc, parsers);
         } else if (sha.equals(repo.getIndexedCommit())) {
             log.debug("Repo {} already at {}", repoId, sha);
         } else {
@@ -262,6 +294,7 @@ public class PortfolioService implements PortfolioControl {
             }
         }
 
+        if (sha != null) indexer.saveRepoFact(repoId, PARSERS_FACT, sha, parsersSignature());
         Repository latest = indexer.getRepository(repoId).orElse(repo);
         latest.setIndexedCommit(sha);
         latest.setStatus(Repository.IndexingStatus.READY);
@@ -279,7 +312,7 @@ public class PortfolioService implements PortfolioControl {
         rc.setVisibility(repo.getVisibility());
         rc.setDescription(repo.getDescription());
         List<String> excludes = new ArrayList<>(defaultExcludes);
-        excludes.addAll(List.of("**/dist/**", "**/vendor/**", "**/.venv/**", "**/__pycache__/**", "**/*.min.js"));
+        excludes.addAll(List.of("**/dist/**", "**/vendor/**", "**/.venv/**", "**/venv/**", "**/site-packages/**", "**/__pycache__/**", "**/.tox/**", "**/*.min.js"));
         rc.setExcludePatterns(excludes);
         return rc;
     }
