@@ -1,14 +1,21 @@
 import React, { useState, useCallback, useEffect } from 'react'
-import { Search, Network, Database, GitBranch, ChevronLeft, ChevronRight, X, Menu } from 'lucide-react'
+import { Search, Network, Database, GitBranch, ChevronLeft, ChevronRight, X, Menu, Boxes, Lightbulb } from 'lucide-react'
 import SearchPanel from './components/SearchPanel'
 import ElementDetail from './components/ElementDetail'
 import GraphView from './components/GraphView'
 import ConnectivityExplorer from './components/ConnectivityExplorer'
 import RepoManager from './components/RepoManager'
 import FileTree from './components/FileTree'
+import PortfolioView from './components/portfolio/PortfolioView'
+import RepoView, { type RepoTab } from './components/portfolio/RepoView'
+import ConceptsView from './components/portfolio/ConceptsView'
+import AuthMenu from './components/AuthMenu'
+import { useQuery } from '@tanstack/react-query'
+import { getPortfolioOverview } from './api/client'
+import { seedFamilies } from './components/portfolio/palette'
 import type { Element } from './types'
 
-type Tab = 'search' | 'graph' | 'connectivity' | 'repos'
+type Tab = 'portfolio' | 'concepts' | 'search' | 'graph' | 'connectivity' | 'repos'
 
 interface NavState {
   selectedElementId: string | null
@@ -16,7 +23,13 @@ interface NavState {
   searchQuery: string
   searchFile: string
   graphRootId: string | null
+  repoId: string | null
+  repoTab: RepoTab
+  archPath: string
+  conceptSlug: string | null
 }
+
+const CODE_TABS: Tab[] = ['search', 'graph', 'connectivity']
 
 // Navigation history entry
 interface HistoryEntry {
@@ -25,7 +38,14 @@ interface HistoryEntry {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('search')
+  // Family colours must be assigned before any page draws them
+  const overview = useQuery({ queryKey: ['portfolio-overview'], queryFn: getPortfolioOverview, staleTime: 60_000 })
+  if (overview.data) seedFamilies(Object.keys(overview.data.families))
+  const [activeTab, setActiveTab] = useState<Tab>('portfolio')
+  const [repoId, setRepoId] = useState<string | null>(null)
+  const [repoTab, setRepoTab] = useState<RepoTab>('overview')
+  const [archPath, setArchPath] = useState('')
+  const [conceptSlug, setConceptSlug] = useState<string | null>(null)
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [graphRootId, setGraphRootId] = useState<string | null>(null)
@@ -37,29 +57,56 @@ export default function App() {
   const [connectivityA, setConnectivityA] = useState<Element | null>(null)
   const [connectivityB, setConnectivityB] = useState<Element | null>(null)
 
-  // Hash-based state persistence
-  useEffect(() => {
-    const hash = window.location.hash.slice(1)
-    if (hash) {
-      try {
-        const state: Partial<NavState> = JSON.parse(decodeURIComponent(hash))
-        if (state.activeTab) setActiveTab(state.activeTab)
-        if (state.selectedElementId) {
-          setSelectedElementId(state.selectedElementId)
-          setDetailOpen(true)
-        }
-        if (state.searchQuery) setSearchQuery(state.searchQuery)
-        if (state.searchFile) setSearchFile(state.searchFile)
-        if (state.graphRootId) setGraphRootId(state.graphRootId)
-      } catch (_) {}
+  // Hash-based state: restored on load and on browser back/forward
+  const applyState = useCallback((state: Partial<NavState>) => {
+    setActiveTab(state.activeTab || 'portfolio')
+    setRepoId(state.repoId || null)
+    setRepoTab(state.repoTab || 'overview')
+    setArchPath(state.archPath || '')
+    setConceptSlug(state.conceptSlug || null)
+    if (state.selectedElementId) {
+      setSelectedElementId(state.selectedElementId)
+      setDetailOpen(true)
     }
+    if (state.searchQuery) setSearchQuery(state.searchQuery)
+    if (state.searchFile) setSearchFile(state.searchFile)
+    if (state.graphRootId) setGraphRootId(state.graphRootId)
   }, [])
 
+  useEffect(() => {
+    const read = () => {
+      const hash = window.location.hash.slice(1)
+      if (!hash) return applyState({})
+      try { applyState(JSON.parse(decodeURIComponent(hash))) } catch (_) {}
+    }
+    read()
+    window.addEventListener('popstate', read)
+    return () => window.removeEventListener('popstate', read)
+  }, [applyState])
+
+  const currentState = useCallback((): NavState => (
+    { activeTab, selectedElementId, searchQuery, searchFile, graphRootId, repoId, repoTab, archPath, conceptSlug }
+  ), [activeTab, selectedElementId, searchQuery, searchFile, graphRootId, repoId, repoTab, archPath, conceptSlug])
+
   const updateHash = useCallback((state: Partial<NavState>) => {
-    const current: Partial<NavState> = { activeTab, selectedElementId, searchQuery, searchFile, graphRootId }
-    const next = { ...current, ...state }
+    const next = { ...currentState(), ...state }
     window.history.replaceState(null, '', `#${encodeURIComponent(JSON.stringify(next))}`)
-  }, [activeTab, selectedElementId, searchQuery, searchFile, graphRootId])
+  }, [currentState])
+
+  /** Moves to a new place in the portfolio views, as a browser history entry. */
+  const navigate = useCallback((state: Partial<NavState>) => {
+    const next = { ...currentState(), ...state }
+    window.history.pushState(null, '', `#${encodeURIComponent(JSON.stringify(next))}`)
+    applyState(next)
+  }, [currentState, applyState])
+
+  const openRepo = useCallback((id: string) => navigate({ activeTab: 'portfolio', repoId: id, repoTab: 'overview', archPath: '' }), [navigate])
+  const openConcept = useCallback((slug: string) => navigate({ activeTab: 'concepts', conceptSlug: slug }), [navigate])
+  const openElementById = useCallback((id: string) => {
+    setSelectedElementId(id)
+    setDetailOpen(true)
+    updateHash({ selectedElementId: id })
+  }, [updateHash])
 
   const pushHistory = useCallback((entry: HistoryEntry) => {
     setHistory((prev) => {
@@ -141,6 +188,8 @@ export default function App() {
   }, [canGoForward, historyIndex, history])
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'portfolio', label: 'Portfolio', icon: <Boxes size={15} /> },
+    { id: 'concepts', label: 'Concepts', icon: <Lightbulb size={15} /> },
     { id: 'search', label: 'Search', icon: <Search size={15} /> },
     { id: 'graph', label: 'Graph', icon: <Network size={15} /> },
     { id: 'connectivity', label: 'Connectivity', icon: <GitBranch size={15} /> },
@@ -187,7 +236,7 @@ export default function App() {
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => handleTabChange(tab.id)}
+              onClick={() => tab.id === 'portfolio' && activeTab === 'portfolio' ? navigate({ repoId: null }) : handleTabChange(tab.id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
                 activeTab === tab.id
                   ? 'bg-slate-600 text-white'
@@ -199,12 +248,13 @@ export default function App() {
             </button>
           ))}
         </div>
+        <AuthMenu />
       </div>
 
       {/* Main layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left sidebar - File Tree */}
-        {sidebarOpen && (
+        {sidebarOpen && CODE_TABS.includes(activeTab) && (
           <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-900 flex flex-col overflow-hidden">
             <div className="px-3 py-2 border-b border-slate-700">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Explorer</span>
@@ -218,6 +268,22 @@ export default function App() {
         {/* Center - Main content */}
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-hidden">
+            <div className={`h-full ${activeTab === 'portfolio' ? 'block' : 'hidden'}`}>
+              {repoId ? (
+                <RepoView repoId={repoId} tab={repoTab} archPath={archPath}
+                  onTab={(t) => navigate({ repoTab: t })}
+                  onArchPath={(p) => navigate({ repoTab: 'architecture', archPath: p })}
+                  onBack={() => navigate({ repoId: null })}
+                  onOpenRepo={openRepo} onOpenConcept={openConcept} onOpenElement={openElementById}
+                  onSearchFile={(_, path) => handleFileClick(path)} />
+              ) : (
+                <PortfolioView onOpenRepo={openRepo} onOpenConcept={openConcept} />
+              )}
+            </div>
+            <div className={`h-full ${activeTab === 'concepts' ? 'block' : 'hidden'}`}>
+              <ConceptsView slug={conceptSlug} onSlug={(s) => navigate({ conceptSlug: s })}
+                onOpenRepo={openRepo} onOpenElement={openElementById} />
+            </div>
             <div className={`h-full ${activeTab === 'search' ? 'block' : 'hidden'}`}>
               <SearchPanel
                 onSelectElement={handleSelectElement}

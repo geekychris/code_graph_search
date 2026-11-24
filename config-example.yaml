@@ -55,6 +55,13 @@ auth:
 # them current (every syncIntervalMinutes and on GitHub push webhooks sent to
 # POST /api/hooks/github). Requires auth.enabled (private repos are included
 # when the token can see them).
+# Concept layer: repo cards from a repo-atlas checkout plus session-written concepts
+knowledge:
+  enabled: true
+  atlasRepo: repo-atlas        # registry id of the repo-atlas repo (portfolio mode indexes it)
+  # atlasDir: /path/to/repo-atlas   # or read a checkout directly
+  warmUp: true                 # build architecture graphs for all repos in the background
+
 portfolio:
   enabled: false
   owners: [geekychris]

@@ -43,6 +43,7 @@ public class RestServer {
     private IndexManagementService indexManagement;
     private PortfolioControl portfolio;
     private java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies;
+    private com.codegraph.core.knowledge.KnowledgeService knowledge;
     private final ApiAuth auth;
 
     private Javalin app;
@@ -65,6 +66,10 @@ public class RestServer {
 
     public void setDependencies(java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies) {
         this.dependencies = dependencies;
+    }
+
+    public void setKnowledge(com.codegraph.core.knowledge.KnowledgeService knowledge) {
+        this.knowledge = knowledge;
     }
 
     /** Whether the current caller may see a repo. */
@@ -232,6 +237,15 @@ public class RestServer {
         app.get("/api/deps/drift",      this::handleDepsDrift);
         app.get("/api/deps/artifacts",  this::handleDepsArtifact);
 
+        // ---- Concepts and architecture ----
+        app.get("/api/portfolio/overview",        this::handlePortfolioOverview);
+        app.get("/api/portfolio/synthesis",       this::handleSynthesis);
+        app.get("/api/repos/{id}/overview",       this::handleRepoOverview);
+        app.get("/api/repos/{id}/architecture",   this::handleRepoArchitecture);
+        app.get("/api/concepts",                  this::handleSearchConcepts);
+        app.get("/api/concepts/queue",            this::handleConceptQueue);
+        app.get("/api/concepts/{slug}",           this::handleGetConcept);
+
         // ---- System ----
         app.get("/api/status", this::handleStatus);
         app.get("/api/health", ctx -> jsonOk(ctx, Map.of("status", "ok")));
@@ -360,6 +374,129 @@ public class RestServer {
         out.put("modules", g.manifests(id).modules());
         out.put("warnings", g.manifests(id).warnings());
         jsonOk(ctx, out);
+    }
+
+    // -------------------------------------------------------------------------
+    // Concepts and architecture
+    // -------------------------------------------------------------------------
+
+    private boolean knowledgeOrFail(Context ctx) {
+        if (knowledge != null) return true;
+        ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+        jsonError(ctx, "The concept layer is not enabled on this server");
+        return false;
+    }
+
+    /** Everything the portfolio map needs in one call: repos with their cards, families, stats and repo edges. */
+    private void handlePortfolioOverview(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        Map<String, com.codegraph.core.knowledge.RepoCard> cards = new HashMap<>();
+        knowledge.cards(this::visibleRepo).forEach(c -> cards.put(c.repoId(), c));
+        List<Map<String, Object>> repos = new ArrayList<>();
+        Map<String, Integer> languages = new TreeMap<>();
+        Map<String, List<String>> families = new TreeMap<>();
+        long elements = 0, files = 0;
+        for (Repository r : graphService.listRepositories()) {
+            var c = cards.get(r.getId());
+            var k = knowledge.knowledge(r.getId());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", r.getId());
+            m.put("visibility", r.getVisibility());
+            m.put("status", r.getStatus());
+            m.put("elements", r.getElementCount());
+            m.put("files", r.getFileCount());
+            List<String> langs = r.getLanguages() != null && !r.getLanguages().isEmpty()
+                    ? r.getLanguages().stream().map(l -> l.name().toLowerCase()).toList()
+                    : c != null && c.languages() != null ? c.languages().stream().map(String::toLowerCase).toList() : List.of();
+            m.put("languages", langs);
+            m.put("pushedAt", r.getPushedAt());
+            m.put("archived", r.isArchived());
+            m.put("url", r.getHtmlUrl());
+            m.put("family", c == null ? null : c.family());
+            m.put("category", c == null ? null : c.category());
+            m.put("lifecycle", c == null ? null : c.status());
+            m.put("maturity", c == null ? null : c.maturity());
+            m.put("purpose", c == null ? r.getDescription() : c.purpose());
+            m.put("tags", c == null ? List.of() : c.tags());
+            m.put("related", c == null ? List.of() : c.related());
+            m.put("described", k.isPresent());
+            m.put("concepts", k.map(x -> x.concepts() == null ? 0 : x.concepts().size()).orElse(0));
+            repos.add(m);
+            elements += r.getElementCount();
+            files += r.getFileCount();
+            langs.stream().filter(l -> !l.equals("markdown") && !l.equals("yaml") && !l.equals("json"))
+                    .forEach(l -> languages.merge(l, 1, Integer::sum));
+            families.computeIfAbsent(c == null || c.family() == null ? "unsorted" : c.family(), f -> new ArrayList<>()).add(r.getId());
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("stats", Map.of("repos", repos.size(), "elements", elements, "files", files,
+                "described", repos.stream().filter(m -> Boolean.TRUE.equals(m.get("described"))).count()));
+        out.put("languages", languages);
+        out.put("families", families);
+        out.put("repos", repos);
+        var g = dependencies == null ? null : dependencies.get();
+        out.put("edges", g == null ? List.of() : g.edges(this::visibleRepo).stream()
+                .map(e -> Map.of("from", e.fromRepo(), "to", e.toRepo())).distinct().toList());
+        jsonOk(ctx, out);
+    }
+
+    private void handleSynthesis(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        jsonOk(ctx, knowledge.synthesis(this::visibleRepo));
+    }
+
+    private void handleRepoOverview(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        String id = ctx.pathParam("id");
+        Optional<Repository> repo = visibleRepo(id) ? graphService.getRepository(id) : Optional.empty();
+        if (repo.isEmpty()) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "Repository not found: " + id);
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("repo", repo.get());
+        out.put("card", knowledge.card(id).map(c -> c.visibleTo(this::visibleRepo)).orElse(null));
+        out.put("knowledge", knowledge.knowledge(id).orElse(null));
+        var g = dependencies == null ? null : dependencies.get();
+        if (g != null && g.repos().contains(id)) {
+            out.put("dependsOn", g.dependenciesOf(id, this::visibleRepo).stream().map(e -> e.toRepo()).distinct().toList());
+            out.put("usedBy", g.dependentsOf(id, this::visibleRepo).stream().map(e -> e.fromRepo()).distinct().toList());
+        }
+        jsonOk(ctx, out);
+    }
+
+    private void handleRepoArchitecture(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        String id = ctx.pathParam("id");
+        if (!visibleRepo(id) || graphService.getRepository(id).isEmpty()) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "Repository not found: " + id);
+            return;
+        }
+        jsonOk(ctx, knowledge.architecture(id, ctx.queryParam("path"), this::visibleRepo));
+    }
+
+    private void handleSearchConcepts(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        int limit = queryParamInt(ctx, "limit", 100);
+        jsonOk(ctx, knowledge.searchConcepts(ctx.queryParam("q"), ctx.queryParam("kind"), this::visibleRepo, limit));
+    }
+
+    private void handleGetConcept(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        var c = knowledge.concept(ctx.pathParam("slug"), this::visibleRepo);
+        if (c.isEmpty()) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "Concept not found");
+            return;
+        }
+        jsonOk(ctx, c.get());
+    }
+
+    private void handleConceptQueue(Context ctx) {
+        if (!knowledgeOrFail(ctx)) return;
+        jsonOk(ctx, knowledge.pendingWork(this::visibleRepo, queryParamInt(ctx, "limit", 50)));
     }
 
     private void handleDepsEdges(Context ctx) {
@@ -1053,7 +1190,7 @@ public class RestServer {
 
         if (wantsSse && !result.isInitialize()) {
             // Send responses as SSE events
-            ctx.contentType("text/event-stream");
+            ctx.contentType("text/event-stream; charset=utf-8");
             ctx.header("Cache-Control", "no-cache");
             ctx.header("Connection", "keep-alive");
 
@@ -1104,7 +1241,7 @@ public class RestServer {
 
         // SSE stream: keep connection alive for potential server-initiated messages
         // For now we just send an initial ping and keep the stream open
-        ctx.contentType("text/event-stream");
+        ctx.contentType("text/event-stream; charset=utf-8");
         ctx.header("Cache-Control", "no-cache");
         ctx.header("Connection", "keep-alive");
         ctx.header(MCP_SESSION_HEADER, sessionId);

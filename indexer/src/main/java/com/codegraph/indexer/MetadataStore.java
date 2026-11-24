@@ -96,6 +96,19 @@ public class MetadataStore implements AutoCloseable {
     }
 
     /** All facts of one kind: repo id → JSON. */
+    public synchronized Optional<String> getFact(String repoId, String kind) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT json FROM repo_facts WHERE repo_id = ? AND kind = ?")) {
+            ps.setString(1, repoId);
+            ps.setString(2, kind);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            log.error("Failed to read {} for {}: {}", kind, repoId, e.getMessage(), e);
+            return Optional.empty();
+        }
+    }
+
     public synchronized Map<String, String> listFacts(String kind) {
         Map<String, String> out = new LinkedHashMap<>();
         try (PreparedStatement ps = conn.prepareStatement("SELECT repo_id, json FROM repo_facts WHERE kind = ? ORDER BY repo_id")) {

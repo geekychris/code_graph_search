@@ -147,9 +147,29 @@ public class McpServer {
         log.info("Registered dependency MCP tools (total: {})", registry.size());
     }
 
-    /** Tools that change what is indexed or watched; callers need {@link com.codegraph.core.security.Principal#admin()}. */
+    /**
+     * Adds the concept-layer tools: repo overviews, architecture, concepts and the session work queue.
+     */
+    public void registerKnowledgeTools(com.codegraph.core.knowledge.KnowledgeService knowledge,
+                                       java.util.function.Predicate<String> visible) {
+        var ctx = new KnowledgeTools.Context(knowledge, visible, mapper);
+        registry.register(new KnowledgeTools.RepoOverview(ctx));
+        registry.register(new KnowledgeTools.RepoArchitecture(ctx));
+        registry.register(new KnowledgeTools.SearchConcepts(ctx));
+        registry.register(new KnowledgeTools.GetConcept(ctx));
+        registry.register(new KnowledgeTools.ConceptWorkQueue(ctx));
+        registry.register(new KnowledgeTools.ClaimConceptWork(ctx));
+        registry.register(new KnowledgeTools.SubmitConcepts(ctx));
+        log.info("Registered knowledge MCP tools (total: {})", registry.size());
+    }
+
+    /**
+     * Tools that change what is indexed or watched, or write to the concept layer;
+     * callers need {@link com.codegraph.core.security.Principal#admin()}.
+     */
     static final Set<String> ADMIN_TOOLS = Set.of(
-            "reindex_repo", "add_repo", "remove_repo", "start_watching", "stop_watching");
+            "reindex_repo", "add_repo", "remove_repo", "start_watching", "stop_watching",
+            "claim_concept_work", "submit_concepts");
 
     private void registerIndexManagementTools() {
         if (indexManagement == null) return;

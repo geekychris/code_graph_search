@@ -104,8 +104,7 @@ public class SearchTools {
             String queryStr = (String) args.get("query");
             SearchQuery sq = new SearchQuery(queryStr);
 
-            @SuppressWarnings("unchecked")
-            List<String> repos = (List<String>) args.get("repos");
+            List<String> repos = repoArg(args);
             if (repos != null && !repos.isEmpty()) sq.setRepoIds(repos);
 
             @SuppressWarnings("unchecked")
@@ -247,8 +246,7 @@ public class SearchTools {
                 sq.setQuery(name);
             }
 
-            @SuppressWarnings("unchecked")
-            List<String> repos = (List<String>) args.get("repos");
+            List<String> repos = repoArg(args);
             if (repos != null && !repos.isEmpty()) sq.setRepoIds(repos);
 
             @SuppressWarnings("unchecked")
@@ -323,5 +321,13 @@ public class SearchTools {
             if (doc.length() > 100) doc = doc.substring(0, 100) + "...";
             sb.append("\n   Doc: ").append(doc);
         }
+    }
+
+    /** {@code repos} as an array, or a single {@code repo} / {@code repos} string (callers guess both). */
+    static List<String> repoArg(Map<String, Object> args) {
+        Object v = args.containsKey("repos") ? args.get("repos") : args.get("repo");
+        if (v instanceof List<?> l) return l.stream().map(Object::toString).toList();
+        if (v instanceof String str && !str.isBlank()) return List.of(str.split("\\s*,\\s*"));
+        return null;
     }
 }

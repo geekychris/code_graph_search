@@ -22,6 +22,7 @@ public class AppConfig {
     private TreeSitterConfig treeSitter = new TreeSitterConfig();
     private AuthConfig auth = new AuthConfig();
     private PortfolioConfig portfolio = new PortfolioConfig();
+    private KnowledgeConfig knowledge = new KnowledgeConfig();
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class IndexerConfig {
@@ -133,6 +134,29 @@ public class AppConfig {
 
     /** Sync and index every repository owned by the given GitHub accounts. */
     @JsonIgnoreProperties(ignoreUnknown = true)
+    /**
+     * The concept layer: repo cards from a repo-atlas checkout, and session-written
+     * overviews and concepts.
+     */
+    public static class KnowledgeConfig {
+        private boolean enabled = true;
+        /** Repo id of the repo-atlas checkout in the registry (portfolio mode indexes it like any repo). */
+        private String atlasRepo = "repo-atlas";
+        /** Or an explicit repo-atlas directory. */
+        private String atlasDir;
+        /** Build architecture graphs for every repo in the background at startup. */
+        private boolean warmUp = true;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getAtlasRepo() { return atlasRepo; }
+        public void setAtlasRepo(String atlasRepo) { this.atlasRepo = atlasRepo; }
+        public String getAtlasDir() { return atlasDir; }
+        public void setAtlasDir(String atlasDir) { this.atlasDir = atlasDir; }
+        public boolean isWarmUp() { return warmUp; }
+        public void setWarmUp(boolean warmUp) { this.warmUp = warmUp; }
+    }
+
     public static class PortfolioConfig {
         private boolean enabled = false;
         private List<String> owners = new ArrayList<>();
@@ -212,6 +236,8 @@ public class AppConfig {
     public void setTreeSitter(TreeSitterConfig treeSitter) { this.treeSitter = treeSitter; }
     public AuthConfig getAuth() { return auth; }
     public void setAuth(AuthConfig auth) { this.auth = auth; }
+    public KnowledgeConfig getKnowledge() { return knowledge; }
+    public void setKnowledge(KnowledgeConfig knowledge) { this.knowledge = knowledge; }
     public PortfolioConfig getPortfolio() { return portfolio; }
     public void setPortfolio(PortfolioConfig portfolio) { this.portfolio = portfolio; }
 }
