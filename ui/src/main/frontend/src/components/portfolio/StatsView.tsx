@@ -21,15 +21,43 @@ const bytesFmt = (n: number) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB
 const metricValue = (c: Counts, m: Metric) => c[m] ?? 0
 const metricLabel: Record<Metric, string> = { code: 'code lines', lines: 'all lines', files: 'files', comment: 'comment lines', blank: 'blank lines', bytes: 'bytes' }
 
-/** A colour for a key of a dimension. */
+const PALETTE = ['#3b82f6', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#14b8a6', '#eab308', '#f97316', '#06b6d4',
+  '#84cc16', '#e879f9', '#fb7185', '#60a5fa', '#4ade80', '#fbbf24', '#c084fc', '#f472b6', '#2dd4bf', '#facc15', '#fb923c']
+const GREYS: Record<string, string> = { '(other)': OTHER_COLOR, Other: '#475569', Binary: '#334155', '(no family)': '#64748b', '(no tags)': '#64748b' }
+
+/**
+ * Colours for one view's keys, all different: kinds and families keep their own
+ * colours, a language keeps its usual colour while no other key has taken it,
+ * and the rest get palette colours nobody uses yet.
+ */
+function colorScale(dim: Dimension, keys: string[]): (key: string) => string {
+  const out = new Map<string, string>()
+  const used = new Set<string>()
+  for (const k of keys) {
+    let c = GREYS[k]
+    if (!c && dim === 'kind') c = KIND_COLORS[k]
+    if (!c && dim === 'family') c = familyColor(k)
+    if (!c && dim === 'language') { const l = languageColor(k); if (l !== '#64748b' && !used.has(l)) c = l }
+    if (c) { out.set(k, c); used.add(c) }
+  }
+  let next = 0
+  for (const k of keys) {
+    if (out.has(k)) continue
+    while (next < PALETTE.length && used.has(PALETTE[next])) next++
+    const c = PALETTE[next % PALETTE.length] ?? PALETTE[out.size % PALETTE.length]
+    out.set(k, c); used.add(c); next++
+  }
+  return (k: string) => out.get(k) ?? OTHER_COLOR
+}
+
+/** A colour for a key of a dimension, for lists that don't build a scale. */
 function colorFor(dim: Dimension, key: string, i: number): string {
-  if (key === '(other)') return OTHER_COLOR
+  if (GREYS[key]) return GREYS[key]
   if (dim === 'kind') return KIND_COLORS[key] ?? OTHER_COLOR
-  if (dim === 'language') { const c = languageColor(key); return c === '#64748b' ? PALETTE[i % PALETTE.length] : c }
   if (dim === 'family') return familyColor(key)
+  if (dim === 'language') { const c = languageColor(key); if (c !== '#64748b') return c }
   return PALETTE[i % PALETTE.length]
 }
-const PALETTE = ['#3b82f6', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#14b8a6', '#eab308', '#f97316', '#06b6d4', '#84cc16', '#e879f9', '#fb7185']
 
 /** A horizontal bar split into parts. */
 function StackBar({ parts, total, height = 10 }: { parts: { key: string; value: number; color: string }[]; total: number; height?: number }) {
@@ -132,6 +160,7 @@ export function RepoStatsTab({ repoId }: { repoId: string }) {
   if (error || !data) return <div className="p-6 text-slate-400">No stats yet for {repoId}. They're counted when the repo is next indexed.</div>
 
   const langs = sorted(data.byLanguage, 'code')
+  const langColor = colorScale('language', langs.map((l) => l.key))
   const kinds = sorted(data.byKind, 'lines').sort((a, b) => KIND_ORDER.indexOf(a.key) - KIND_ORDER.indexOf(b.key))
   const testRatio = (data.byKind.test?.code ?? 0) / Math.max(1, (data.byKind.source?.code ?? 0))
   const codeTotal = langs.reduce((n, l) => n + l.counts.code, 0)
@@ -148,8 +177,8 @@ export function RepoStatsTab({ repoId }: { repoId: string }) {
 
       <section className="space-y-2">
         <h3 className="text-sm font-semibold text-white">Languages <span className="text-slate-500 font-normal">by code lines</span></h3>
-        <StackBar total={codeTotal} parts={langs.slice(0, 12).map((l, i) => ({ key: l.key, value: l.counts.code, color: colorFor('language', l.key, i) }))} height={14} />
-        <Legend items={langs.filter((l) => l.counts.code > 0).slice(0, 12).map((l, i) => ({ key: l.key, color: colorFor('language', l.key, i), value: codeTotal ? Math.round((l.counts.code / codeTotal) * 100) + '%' : '' }))} />
+        <StackBar total={codeTotal} parts={langs.slice(0, 12).map((l) => ({ key: l.key, value: l.counts.code, color: langColor(l.key) }))} height={14} />
+        <Legend items={langs.filter((l) => l.counts.code > 0).slice(0, 12).map((l) => ({ key: l.key, color: langColor(l.key), value: codeTotal ? Math.round((l.counts.code / codeTotal) * 100) + '%' : '' }))} />
       </section>
 
       <section className="space-y-2">
@@ -161,7 +190,7 @@ export function RepoStatsTab({ repoId }: { repoId: string }) {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <section className="space-y-2">
           <h3 className="text-sm font-semibold text-white">Languages</h3>
-          <CountsTable rows={langs} first="language" colorOf={(k, i) => colorFor('language', k, i)} />
+          <CountsTable rows={langs} first="language" colorOf={langColor} />
         </section>
         <section className="space-y-2">
           <h3 className="text-sm font-semibold text-white">Top-level directories</h3>
@@ -204,10 +233,11 @@ const FILTERS: { key: keyof StatsQuery; dim: Dimension }[] = [
 
 /** The Stats page: rollups across every repo the caller can see. */
 export function PortfolioStats({ onOpenRepo }: { onOpenRepo: (id: string) => void }) {
-  const [q, setQ] = useState<StatsQuery>({ group: 'family', breakdown: 'language', metric: 'code' })
+  const [q, setQ] = useState<StatsQuery>({ group: 'family', breakdown: 'kind', metric: 'code' })
   const { data, error, isLoading } = useQuery({ queryKey: ['stats-rollup', q], queryFn: () => getStatsRollup(q), staleTime: 60_000, placeholderData: (p) => p })
   const set = (patch: Partial<StatsQuery>) => setQ((old) => ({ ...old, ...patch }))
   const filters = FILTERS.filter((f) => q[f.key])
+  const partColor = useMemo(() => colorScale(q.breakdown, uniqueParts(data?.groups ?? [], 1000)), [data, q.breakdown])
   const maxGroup = useMemo(() => Math.max(1, ...(data?.groups ?? []).map((g) => metricValue(g.counts, q.metric))), [data, q.metric])
 
   // clicking a group drills in: filter by it and show its repos; a repo opens its page
@@ -235,7 +265,7 @@ export function PortfolioStats({ onOpenRepo }: { onOpenRepo: (id: string) => voi
             <button className="text-blue-300 hover:text-white ml-1" onClick={() => set({ [f.key]: undefined } as Partial<StatsQuery>)} aria-label={`Remove ${f.key} filter`}>×</button>
           </span>
         ))}
-        {filters.length > 0 && <button className="text-xs text-slate-400 hover:text-white" onClick={() => setQ({ group: 'family', breakdown: 'language', metric: q.metric })}>Reset</button>}
+        {filters.length > 0 && <button className="text-xs text-slate-400 hover:text-white" onClick={() => setQ({ group: 'family', breakdown: 'kind', metric: q.metric })}>Reset</button>}
       </div>
 
       {error && <div className="text-sm text-red-400">{String(error)}</div>}
@@ -249,7 +279,7 @@ export function PortfolioStats({ onOpenRepo }: { onOpenRepo: (id: string) => voi
               const v = metricValue(g.counts, q.metric)
               const parts = q.breakdown === 'none'
                 ? [{ key: g.key, value: v, color: colorFor(q.group, g.key, gi) }]
-                : g.breakdown.map((p, i) => ({ key: p.key, value: metricValue(p.counts, q.metric), color: colorFor(q.breakdown, p.key, i) }))
+                : g.breakdown.map((p) => ({ key: p.key, value: metricValue(p.counts, q.metric), color: partColor(p.key) }))
               return (
                 <div key={g.key} className="grid grid-cols-[220px_1fr_90px] items-center gap-3 text-sm">
                   <button onClick={() => drill(g.key)} className="text-left truncate text-blue-300 hover:text-white" title={`${g.key}: ${g.repos} repo(s)`}>
@@ -265,7 +295,7 @@ export function PortfolioStats({ onOpenRepo }: { onOpenRepo: (id: string) => voi
             {data.groups.length > 60 && <p className="text-xs text-slate-500">{data.groups.length - 60} more in the table below</p>}
           </section>
           {q.breakdown !== 'none' && (
-            <Legend items={uniqueParts(data.groups).map((k, i) => ({ key: k, color: colorFor(q.breakdown, k, i) }))} />
+            <Legend items={uniqueParts(data.groups).map((k) => ({ key: k, color: partColor(k) }))} />
           )}
           <section className="pt-2">
             <CountsTable rows={data.groups.map((g) => ({ key: g.key, counts: g.counts, repos: g.repos }))}
@@ -278,10 +308,10 @@ export function PortfolioStats({ onOpenRepo }: { onOpenRepo: (id: string) => voi
   )
 }
 
-function uniqueParts(groups: { breakdown: { key: string }[] }[]): string[] {
+function uniqueParts(groups: { breakdown: { key: string }[] }[], max = 20): string[] {
   const seen: string[] = []
   for (const g of groups) for (const p of g.breakdown) if (!seen.includes(p.key)) seen.push(p.key)
-  return seen.slice(0, 16)
+  return seen.slice(0, max)
 }
 
 function Select({ label, value, options, onChange }: { label: string; value: string; options: { id: string; label: string }[]; onChange: (v: string) => void }) {
