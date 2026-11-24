@@ -327,4 +327,31 @@ class RestApiTest extends BaseIntegrationTest {
         assertThat(result.isArray()).isTrue();
         assertThat(result.size()).isGreaterThan(0);
     }
+
+    // ---- MCP over HTTP ----
+
+    @Test
+    @Order(23)
+    void mcpEventStreamDeclaresUtf8() throws IOException {
+        // Without an explicit charset, Jetty encoded text/event-stream as Latin-1 and
+        // mangled every non-ASCII character a tool returned.
+        Request init = new Request.Builder().url("http://localhost:" + PORT + "/mcp")
+                .header("Accept", "application/json, text/event-stream")
+                .post(RequestBody.create("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}",
+                        MediaType.get("application/json")))
+                .build();
+        String sid;
+        try (Response r = http.newCall(init).execute()) {
+            sid = r.header("Mcp-Session-Id");
+        }
+        Request list = new Request.Builder().url("http://localhost:" + PORT + "/mcp")
+                .header("Accept", "application/json, text/event-stream")
+                .header("Mcp-Session-Id", sid)
+                .post(RequestBody.create("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+                        MediaType.get("application/json")))
+                .build();
+        try (Response r = http.newCall(list).execute()) {
+            assertThat(r.header("Content-Type")).contains("text/event-stream").containsIgnoringCase("charset=utf-8");
+        }
+    }
 }

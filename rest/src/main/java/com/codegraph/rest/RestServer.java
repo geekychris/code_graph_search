@@ -1190,7 +1190,7 @@ public class RestServer {
 
         if (wantsSse && !result.isInitialize()) {
             // Send responses as SSE events
-            ctx.contentType("text/event-stream");
+            ctx.contentType("text/event-stream; charset=utf-8");
             ctx.header("Cache-Control", "no-cache");
             ctx.header("Connection", "keep-alive");
 
@@ -1241,7 +1241,7 @@ public class RestServer {
 
         // SSE stream: keep connection alive for potential server-initiated messages
         // For now we just send an initial ping and keep the stream open
-        ctx.contentType("text/event-stream");
+        ctx.contentType("text/event-stream; charset=utf-8");
         ctx.header("Cache-Control", "no-cache");
         ctx.header("Connection", "keep-alive");
         ctx.header(MCP_SESSION_HEADER, sessionId);
