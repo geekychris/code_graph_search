@@ -477,11 +477,18 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             concepts.put(slug, new Concept(slug, c.name().strip(), kind, c.summary(), c.details(), c.howToUse(), anchors, c.related()));
         }
         if (repo.getVisibility() == Visibility.PUBLIC) {
-            String text = String.join("\n", Objects.toString(overview, ""), Objects.toString(diagram, ""),
-                    concepts.values().toString());
+            // Prose only: anchors are code names in this repo. A name counts only as a whole
+            // token, so private "hitorro" doesn't match "hitorro-core" or "com.hitorro.util".
+            StringBuilder prose = new StringBuilder(Objects.toString(overview, "")).append('\n').append(Objects.toString(diagram, ""));
+            for (Concept c : concepts.values()) {
+                prose.append('\n').append(c.name()).append('\n').append(Objects.toString(c.summary(), ""))
+                        .append('\n').append(Objects.toString(c.howToUse(), "")).append('\n').append(Objects.toString(c.details(), ""));
+            }
+            String text = prose.toString();
             for (Repository other : indexer.listRepositories()) {
                 if (other.isPublic() || other.getId().length() < 5) continue;
-                if (Pattern.compile("\\b" + Pattern.quote(other.getId()) + "\\b").matcher(text).find()) {
+                String id = Pattern.quote(other.getId());
+                if (Pattern.compile("(?<![\\w.\\-/])" + id + "(?![\\w\\-/]|\\.\\w)").matcher(text).find()) {
                     warnings.add("This repo is public but the text names private repo '" + other.getId() + "'; resubmit without it");
                 }
             }

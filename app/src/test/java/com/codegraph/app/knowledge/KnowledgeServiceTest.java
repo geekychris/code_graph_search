@@ -214,6 +214,18 @@ class KnowledgeServiceTest {
         var result = knowledge.submit("lib", new KnowledgeService.Submission(
                 "Also powers secretsauce.", null, List.of()), "test");
         assertThat(result.warnings()).anyMatch(w -> w.contains("secretsauce"));
+
+        // the private name inside a longer repo name, a package or an anchor is not a mention
+        var ok = knowledge.submit("lib", new KnowledgeService.Submission(
+                "Built on secretsauce-core and com.secretsauce.util; see secretsauce.", null,
+                List.of(new Concept(null, "Thing", "api", "Uses secretsauce-lib.", null, null,
+                        List.of(new Anchor(null, "com.x.secretsauce.Thing", null, null, null)), null))), "test");
+        assertThat(ok.warnings()).anyMatch(w -> w.contains("secretsauce"));   // "see secretsauce." at the end
+        var clean = knowledge.submit("lib", new KnowledgeService.Submission(
+                "Built on secretsauce-core and com.secretsauce.util.", null,
+                List.of(new Concept(null, "Thing", "api", "Uses secretsauce-lib.", null, null,
+                        List.of(new Anchor(null, "com.x.secretsauce.Thing", null, null, null)), null))), "test");
+        assertThat(clean.warnings()).noneMatch(w -> w.contains("secretsauce"));
     }
 
     // ---- helpers ----
