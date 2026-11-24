@@ -1,0 +1,37 @@
+# cloud-stack app manifest (cloud-stack docs/APPS.md). It tells an installer how to
+# build this app, which secrets it needs, which manifests to apply and how to reach
+# it. Two ways to install:
+#   scripts/install-k8s.sh                       # any cluster your kubectl reaches
+#   deploy/app/install.sh <this repo> spark       # from a cloud-stack checkout: install
+#                                                 # on a lab host and register it
+apiVersion: cloudstack/v1
+kind: App
+name: codegraph
+title: Code Graph
+description: Code graph of every non-fork geekychris repo; search, architecture maps, concepts (REST /api, MCP /mcp, UI /)
+repo: geekychris/code_graph_search
+group: apps
+icon: search
+
+namespace: codegraph
+build:
+  image: codegraph            # the image name deploy/k8s uses; tagged with the commit
+  dockerfile: Dockerfile
+  context: .
+manifests: deploy/k8s
+workload: {kind: Deployment, name: codegraph, container: codegraph}
+service: {name: codegraph, port: 8080, nodePort: 30930}
+health: /api/health
+ui: /
+
+secrets:
+  - name: codegraph-secrets
+    keys:
+      - {key: GITHUB_TOKEN, env: CODEGRAPH_GITHUB_TOKEN, description: "GitHub token that can list and read the repos (read-only contents and metadata)"}
+      - {key: CODEGRAPH_ADMIN_TOKEN, generate: hex32}
+      - {key: CODEGRAPH_READER_TOKEN, generate: hex32}
+      - {key: CODEGRAPH_PUBLIC_TOKEN, generate: hex32}
+      - {key: CODEGRAPH_WEBHOOK_SECRET, generate: hex32}
+
+# What cloud-stack can offer its agents once installed
+mcp: {path: /mcp, transport: http, token: {secret: codegraph-secrets, key: CODEGRAPH_READER_TOKEN}}

@@ -1,6 +1,9 @@
 # Code Graph Search as a portfolio service on Kubernetes.
 #
-# Create the secret first (values are examples):
+# Install with scripts/install-k8s.sh (builds the image, creates the secret, sets
+# the image and NodePort from cloudstack.app.yaml), or from cloud-stack with
+# deploy/app/install.sh. To apply this file by hand instead, create the secret first
+# (values are examples) and replace the image with one your cluster can pull:
 #   kubectl -n codegraph create secret generic codegraph-secrets \
 #     --from-literal=GITHUB_TOKEN=github_pat_... \
 #     --from-literal=CODEGRAPH_ADMIN_TOKEN=$(openssl rand -hex 32) \
@@ -50,7 +53,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: codegraph
-          image: ghcr.io/geekychris/code-graph-search:latest
+          image: codegraph:latest   # set by the installer (cloudstack.app.yaml build.image)
           ports:
             - name: http
               containerPort: 8080
@@ -88,7 +91,7 @@ metadata:
   name: codegraph
   namespace: codegraph
 spec:
-  type: NodePort       # node port assigned by Kubernetes; register it with cloud-stack
+  type: NodePort       # the installer sets the NodePort from cloudstack.app.yaml
   selector:
     app: codegraph
   ports:
