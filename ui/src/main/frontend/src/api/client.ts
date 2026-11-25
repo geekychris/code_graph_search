@@ -1,4 +1,5 @@
 import type { PortfolioOverview, RepoOverview, Architecture, ConceptEntry, WorkItem, RepoDeps } from '../types/knowledge'
+import type { RepoStatsView, StatsQuery, StatsRollup } from '../types/stats'
 import type {
   Element,
   Edge,
@@ -268,4 +269,12 @@ export function getConceptQueue(): Promise<WorkItem[]> {
 
 export function getRepoDeps(id: string): Promise<RepoDeps> {
   return apiFetch<RepoDeps>(`/deps/repos/${encodeURIComponent(id)}`)
+}
+
+export function getRepoStats(id: string): Promise<RepoStatsView> {
+  return apiFetch<RepoStatsView>(`/repos/${encodeURIComponent(id)}/stats`)
+}
+
+export function getStatsRollup(q: StatsQuery): Promise<StatsRollup> {
+  return apiFetch<StatsRollup>(`/stats${toQueryString({ ...q })}`)
 }

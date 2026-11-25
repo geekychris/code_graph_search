@@ -129,6 +129,11 @@ REST: `GET /api/portfolio/overview`, `/api/portfolio/synthesis`, `/api/repos/{id
 `/api/repos/{id}/architecture?path=`, `/api/concepts?q=&kind=`, `/api/concepts/{slug}`,
 `/api/concepts/queue`.
 
+**Project stats** (docs/STATS.md): files and lines by language and kind per repo, counted at
+the indexed commit, and rolled up by repo, family, language, kind, visibility or tag:
+`GET /api/repos/{id}/stats`, `GET /api/stats?group=&breakdown=&metric=&…`, MCP `project_stats`,
+and the UI's Stats page and repo Stats tab.
+
 ## Endpoints
 
 | Route | What |

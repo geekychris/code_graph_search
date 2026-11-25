@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Lock, Github, Sparkles, Box, Network, BookOpen, GitFork, Lightbulb, Info } from 'lucide-react'
+import { ArrowLeft, Lock, Github, Sparkles, Box, Network, BookOpen, GitFork, Lightbulb, Info, BarChart3 } from 'lucide-react'
+import { RepoStatsTab } from './StatsView'
 import { getRepoOverview, getArchitecture, getRepoDeps } from '../../api/client'
 import type { Concept, RepoOverview } from '../../types/knowledge'
 import Markdown from './Markdown'
@@ -10,7 +11,7 @@ import CyGraph, { BASE_STYLE } from './CyGraph'
 import { Centered, Maturity } from './PortfolioView'
 import { familyColor, lifecycleColor, languageColor, kindColor, formatCount } from './palette'
 
-export type RepoTab = 'overview' | 'architecture' | 'concepts' | 'dependencies' | 'dossier'
+export type RepoTab = 'overview' | 'architecture' | 'stats' | 'concepts' | 'dependencies' | 'dossier'
 
 interface Props {
   repoId: string
@@ -36,6 +37,7 @@ export default function RepoView(p: Props) {
   const tabs: { id: RepoTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'overview', label: 'Overview', icon: <Info size={14} /> },
     { id: 'architecture', label: 'Architecture', icon: <Network size={14} /> },
+    { id: 'stats', label: 'Stats', icon: <BarChart3 size={14} /> },
     { id: 'concepts', label: 'Concepts', icon: <Lightbulb size={14} />, count: (k?.concepts?.length || 0) + (card?.tags?.length || 0) },
     { id: 'dependencies', label: 'Dependencies', icon: <GitFork size={14} />, count: (data.dependsOn?.length || 0) + (data.usedBy?.length || 0) },
     { id: 'dossier', label: 'Dossier', icon: <BookOpen size={14} /> },
@@ -85,6 +87,7 @@ export default function RepoView(p: Props) {
           <ArchitectureMap repoId={p.repoId} path={p.archPath} onPath={p.onArchPath} onOpenRepo={p.onOpenRepo}
             onOpenElement={p.onOpenElement} onSearchFile={(path) => p.onSearchFile(p.repoId, path)} />
         )}
+        {p.tab === 'stats' && <RepoStatsTab repoId={p.repoId} />}
         {p.tab === 'concepts' && <ConceptsTab data={data} {...p} />}
         {p.tab === 'dependencies' && <DependenciesTab repoId={p.repoId} onOpenRepo={p.onOpenRepo} />}
         {p.tab === 'dossier' && <DossierTab data={data} />}

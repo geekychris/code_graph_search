@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react'
-import { Search, Network, Database, GitBranch, ChevronLeft, ChevronRight, X, Menu, Boxes, Lightbulb } from 'lucide-react'
+import { Search, Network, Database, GitBranch, ChevronLeft, ChevronRight, X, Menu, Boxes, Lightbulb, BarChart3 } from 'lucide-react'
 import SearchPanel from './components/SearchPanel'
 import ElementDetail from './components/ElementDetail'
 import GraphView from './components/GraphView'
@@ -9,13 +9,14 @@ import FileTree from './components/FileTree'
 import PortfolioView from './components/portfolio/PortfolioView'
 import RepoView, { type RepoTab } from './components/portfolio/RepoView'
 import ConceptsView from './components/portfolio/ConceptsView'
+import { PortfolioStats } from './components/portfolio/StatsView'
 import AuthMenu from './components/AuthMenu'
 import { useQuery } from '@tanstack/react-query'
 import { getPortfolioOverview } from './api/client'
 import { seedFamilies } from './components/portfolio/palette'
 import type { Element } from './types'
 
-type Tab = 'portfolio' | 'concepts' | 'search' | 'graph' | 'connectivity' | 'repos'
+type Tab = 'portfolio' | 'concepts' | 'stats' | 'search' | 'graph' | 'connectivity' | 'repos'
 
 interface NavState {
   selectedElementId: string | null
@@ -190,6 +191,7 @@ export default function App() {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'portfolio', label: 'Portfolio', icon: <Boxes size={15} /> },
     { id: 'concepts', label: 'Concepts', icon: <Lightbulb size={15} /> },
+    { id: 'stats', label: 'Stats', icon: <BarChart3 size={15} /> },
     { id: 'search', label: 'Search', icon: <Search size={15} /> },
     { id: 'graph', label: 'Graph', icon: <Network size={15} /> },
     { id: 'connectivity', label: 'Connectivity', icon: <GitBranch size={15} /> },
@@ -283,6 +285,9 @@ export default function App() {
             <div className={`h-full ${activeTab === 'concepts' ? 'block' : 'hidden'}`}>
               <ConceptsView slug={conceptSlug} onSlug={(s) => navigate({ conceptSlug: s })}
                 onOpenRepo={openRepo} onOpenElement={openElementById} />
+            </div>
+            <div className={`h-full ${activeTab === 'stats' ? 'block' : 'hidden'}`}>
+              {activeTab === 'stats' && <PortfolioStats onOpenRepo={openRepo} />}
             </div>
             <div className={`h-full ${activeTab === 'search' ? 'block' : 'hidden'}`}>
               <SearchPanel

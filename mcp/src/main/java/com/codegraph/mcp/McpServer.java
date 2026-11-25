@@ -163,6 +163,12 @@ public class McpServer {
         log.info("Registered knowledge MCP tools (total: {})", registry.size());
     }
 
+    public void registerStatsTools(com.codegraph.core.stats.StatsService stats,
+                                   java.util.function.Predicate<String> visible) {
+        registry.register(new com.codegraph.mcp.tools.StatsTools.ProjectStats(stats, visible));
+        log.info("Registered stats MCP tool (total: {})", registry.size());
+    }
+
     /**
      * Tools that change what is indexed or watched, or write to the concept layer;
      * callers need {@link com.codegraph.core.security.Principal#admin()}.

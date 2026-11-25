@@ -44,6 +44,7 @@ public class RestServer {
     private PortfolioControl portfolio;
     private java.util.function.Supplier<com.codegraph.deps.graph.DependencyGraph> dependencies;
     private com.codegraph.core.knowledge.KnowledgeService knowledge;
+    private com.codegraph.core.stats.StatsService stats;
     private final ApiAuth auth;
 
     private Javalin app;
@@ -70,6 +71,10 @@ public class RestServer {
 
     public void setKnowledge(com.codegraph.core.knowledge.KnowledgeService knowledge) {
         this.knowledge = knowledge;
+    }
+
+    public void setStats(com.codegraph.core.stats.StatsService stats) {
+        this.stats = stats;
     }
 
     /** Whether the current caller may see a repo. */
@@ -246,6 +251,10 @@ public class RestServer {
         app.get("/api/concepts/queue",            this::handleConceptQueue);
         app.get("/api/concepts/{slug}",           this::handleGetConcept);
 
+        // ---- Project stats ----
+        app.get("/api/repos/{id}/stats",          this::handleRepoStats);
+        app.get("/api/stats",                     this::handleStatsRollup);
+
         // ---- System ----
         app.get("/api/status", this::handleStatus);
         app.get("/api/health", ctx -> jsonOk(ctx, Map.of("status", "ok")));
@@ -379,6 +388,71 @@ public class RestServer {
     // -------------------------------------------------------------------------
     // Concepts and architecture
     // -------------------------------------------------------------------------
+
+    /** One repo's stats: totals, per language, per kind, the language × kind cells, top directories, largest files. */
+    private void handleRepoStats(Context ctx) {
+        String id = ctx.pathParam("id");
+        if (stats == null || !visibleRepo(id) || graphService.getRepository(id).isEmpty()) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "Repository not found: " + id);
+            return;
+        }
+        var s = stats.repoStats(id);
+        if (s.isEmpty()) {
+            ctx.status(HttpStatus.NOT_FOUND);
+            jsonError(ctx, "No stats yet for " + id + ": they're counted when the repo is next indexed");
+            return;
+        }
+        jsonOk(ctx, repoStatsView(s.get()));
+    }
+
+    static Map<String, Object> repoStatsView(com.codegraph.core.stats.RepoStats s) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("repo", s.repoId());
+        out.put("commit", s.commit());
+        out.put("computedAt", s.computedAt());
+        out.put("totals", s.totals());
+        out.put("byLanguage", s.byLanguage());
+        out.put("byKind", s.byKind());
+        out.put("cells", s.cells());
+        out.put("byDir", s.byDir());
+        out.put("largest", s.largest());
+        out.put("excluded", s.excluded());
+        return out;
+    }
+
+    /**
+     * Rolls up the visible repos' stats:
+     * {@code ?group=family&breakdown=language&metric=code&repo=a,b&family=…&language=…&kind=…&visibility=…&tag=…&limit=12}.
+     */
+    private void handleStatsRollup(Context ctx) {
+        if (stats == null) {
+            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
+            jsonError(ctx, "Stats are not enabled on this server");
+            return;
+        }
+        var q = new com.codegraph.core.stats.StatsRollup.Query(ctx.queryParam("group"), ctx.queryParam("breakdown"),
+                ctx.queryParam("metric"), csv(ctx.queryParam("repo")), csv(ctx.queryParam("family")),
+                csv(ctx.queryParam("language")), csv(ctx.queryParam("kind")), csv(ctx.queryParam("visibility")),
+                csv(ctx.queryParam("tag")), parseIntOr(ctx.queryParam("limit"), 12));
+        try {
+            jsonOk(ctx, stats.rollup(q, this::visibleRepo));
+        } catch (IllegalArgumentException e) {
+            ctx.status(HttpStatus.BAD_REQUEST);
+            jsonError(ctx, e.getMessage());
+        }
+    }
+
+    private static Set<String> csv(String v) {
+        if (v == null || v.isBlank()) return Set.of();
+        Set<String> out = new LinkedHashSet<>();
+        for (String p : v.split(",")) if (!p.isBlank()) out.add(p.trim());
+        return out;
+    }
+
+    private static int parseIntOr(String v, int dflt) {
+        try { return v == null ? dflt : Integer.parseInt(v.trim()); } catch (NumberFormatException e) { return dflt; }
+    }
 
     private boolean knowledgeOrFail(Context ctx) {
         if (knowledge != null) return true;

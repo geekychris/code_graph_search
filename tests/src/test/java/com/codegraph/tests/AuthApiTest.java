@@ -18,6 +18,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,6 +63,7 @@ class AuthApiTest {
         ScopedGraphService scoped = new ScopedGraphService(raw);
         McpServer mcp = new McpServer(scoped, mapper);
         server = new RestServer(scoped, mcp, config, mapper);
+        server.setStats(new FixedStats());
         server.start();
     }
 
@@ -69,6 +72,40 @@ class AuthApiTest {
         if (server != null) server.stop();
         raw.close();
         http.dispatcher().executorService().shutdown();
+    }
+
+    /** Stats for both repos; the REST layer must only ever pass the caller's visible ones through. */
+    private static class FixedStats implements com.codegraph.core.stats.StatsService {
+        private final Map<String, com.codegraph.core.stats.RepoStats> all = Map.of(
+                "open-lib", stats("open-lib", 10), "secret-app", stats("secret-app", 1000));
+
+        private static com.codegraph.core.stats.RepoStats stats(String id, long code) {
+            return new com.codegraph.core.stats.RepoStats(id, "c", "now", 1,
+                    Map.of("Java", Map.of("source", new com.codegraph.core.stats.Counts(1, code, code, 0, 0, 0))),
+                    Map.of(), List.of(), 0);
+        }
+
+        @Override
+        public Optional<com.codegraph.core.stats.RepoStats> repoStats(String repoId) {
+            return Optional.ofNullable(all.get(repoId));
+        }
+
+        @Override
+        public com.codegraph.core.stats.StatsRollup.Result rollup(com.codegraph.core.stats.StatsRollup.Query q,
+                                                                java.util.function.Predicate<String> visible) {
+            return com.codegraph.core.stats.StatsRollup.rollup(all.values().stream().filter(s -> visible.test(s.repoId())).toList(),
+                    id -> com.codegraph.core.stats.StatsRollup.RepoMeta.NONE, q);
+        }
+    }
+
+    @Test
+    void statsFollowVisibility() throws IOException {
+        // a public token's rollup only counts public repos; a reader's counts both
+        assertThat(getJson("/api/stats?group=repo", PUBLIC_ONLY).path("totals").path("code").asLong()).isEqualTo(10);
+        assertThat(getJson("/api/stats?group=repo", READER).path("totals").path("code").asLong()).isEqualTo(1010);
+        assertThat(status("GET", "/api/repos/secret-app/stats", PUBLIC_ONLY, null)).isEqualTo(404);
+        assertThat(status("GET", "/api/repos/secret-app/stats", READER, null)).isEqualTo(200);
+        assertThat(status("GET", "/api/stats?group=bogus", READER, null)).isEqualTo(400);
     }
 
     @Test

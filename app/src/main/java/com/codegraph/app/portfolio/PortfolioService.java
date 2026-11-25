@@ -67,6 +67,12 @@ public class PortfolioService implements PortfolioControl {
     /** Latest push time seen from GitHub per repo, applied once the repo is indexed. */
     private final ConcurrentHashMap<String, Optional<Instant>> pendingPush = new ConcurrentHashMap<>();
     private volatile SyncReport lastSync;
+    /** Counts each repo at its indexed commit (null: no stats). */
+    private volatile com.codegraph.app.stats.StatsServiceImpl stats;
+
+    public void setStats(com.codegraph.app.stats.StatsServiceImpl stats) {
+        this.stats = stats;
+    }
 
     /** What one sync found and did. */
     public record SyncReport(Instant at, int listed, int tracked, int queued, int skipped, List<String> errors) {}
@@ -225,6 +231,7 @@ public class PortfolioService implements PortfolioControl {
     private boolean needsIndexing(Repository repo, RepoLister.RemoteRepo r) {
         if (repo.getIndexedCommit() == null) return true;
         if (parsersChanged(repo.getId())) return true;
+        if (stats != null && stats.stale(repo.getId(), repo.getIndexedCommit())) return true;
         if (repo.getStatus() == Repository.IndexingStatus.ERROR) return true;
         if (r.pushedAt() == null || repo.getPushedAt() == null) return true;
         return r.pushedAt().isAfter(repo.getPushedAt());
@@ -295,6 +302,7 @@ public class PortfolioService implements PortfolioControl {
         }
 
         if (sha != null) indexer.saveRepoFact(repoId, PARSERS_FACT, sha, parsersSignature());
+        if (sha != null && stats != null && stats.stale(repoId, sha)) stats.compute(repoId, dir, sha);
         Repository latest = indexer.getRepository(repoId).orElse(repo);
         latest.setIndexedCommit(sha);
         latest.setStatus(Repository.IndexingStatus.READY);
